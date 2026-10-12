@@ -1,0 +1,33 @@
+# Mali-G720 / POCO X7 Pro (Dimensity 8400 Ultra) starting profile.
+# Copy these lines over the matching lines in
+# Android/data/com.libertyrecomp/files/args.txt, with driver.txt = system.
+# Tile GPU: wins by lowering internal resolution and passes, not by sysmem.
+
+--log_level=warn
+--gta4_output_height_cap=720
+--gta4_native_upscaler=fsr1
+--gta4_fsr1_quality=performance
+--gta4_native_anti_aliasing=off
+--gta4_reflection_aa=off
+--gta4_draw_distance_scale=1.0
+--gta4_dynamic_draw_distance=true
+--gta4_dynamic_draw_distance_min=0.55
+--gta4_shadow_map_base_size=256
+--gta4_shadow_distance_scale=1.0
+--gta4_reflection_resolution=original
+--gta4_reflection_capture_distance=near
+--gta4_frame_limit=30
+--gta4_present_mode=vsync
+--gta4_traffic_density_scale=0.4
+--gta4_parked_car_density_scale=0.4
+--gta4_ped_density_scale=0.4
+--gta4_scenario_ped_density_scale=0.4
+--gta4_motion_blur=false
+--gta4_native_max_queued_frames=3
+--gta4_fps_guard=1
+# Mali has no shaderClipDistance: clip-plane draws are skipped by the backend.
+# Leave strict veto off (default false since Mali support).
+--vulkan_require_shader_clip_distance=false
+# Turnip-only GPU-hang workaround: test empty on Mali, restore if it hangs.
+# Empty value = do not skip any shader.
+--gta4_native_skip_pixel_shaders=

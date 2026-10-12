@@ -25,6 +25,13 @@
 
 #include <ucontext.h>
 
+#if REX_PLATFORM_ANDROID
+#include <android/log.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <unwind.h>
+#endif
+
 namespace rex::arch {
 
 bool signal_handlers_installed_ = false;
@@ -209,6 +216,51 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   // Not a guest-memory fault. Returning would re-execute the faulting
   // instruction forever (a silent 100% CPU hang); hand it to whoever was
   // installed before us (debuggerd on Android) so it crashes with a report.
+#if REX_PLATFORM_ANDROID
+  // Some HyperOS/MIUI builds never emit a tombstone for game-process crashes,
+  // leaving signal 11 with no stack anywhere. Dump a best-effort native
+  // backtrace to logcat here (unwinding + dladdr + logd write only, no heap):
+  // this runs solely on the fatal path, never for handled guest faults.
+  {
+    constexpr size_t kMaxFrames = 32;
+    struct UnwindState {
+      void** current;
+      void** end;
+    };
+    struct UnwindCallbacks {
+      static _Unwind_Reason_Code Callback(_Unwind_Context* context, void* arg) {
+        auto* state = static_cast<UnwindState*>(arg);
+        if (state->current == state->end) return _URC_END_OF_STACK;
+        *state->current++ = reinterpret_cast<void*>(_Unwind_GetIP(context));
+        return _URC_NO_REASON;
+      }
+    };
+    void* frames[kMaxFrames];
+    UnwindState state{frames, frames + kMaxFrames};
+    _Unwind_Backtrace(&UnwindCallbacks::Callback, &state);
+    const size_t frame_count = size_t(state.current - frames);
+    __android_log_print(ANDROID_LOG_FATAL, "LibertyCrash",
+                        "fatal signal=%d addr=%p tid=%d frames=%zu (not a guest fault)",
+                        signal_number, signal_info->si_addr, gettid(), frame_count);
+    for (size_t i = 0; i < frame_count; ++i) {
+      Dl_info info{};
+      const char* soname = "?";
+      const char* symbol = "???";
+      uintptr_t offset = 0;
+      if (dladdr(frames[i], &info)) {
+        if (info.dli_fname) soname = info.dli_fname;
+        if (info.dli_sname) {
+          symbol = info.dli_sname;
+          offset = uintptr_t(frames[i]) - uintptr_t(info.dli_saddr);
+        } else if (info.dli_fbase) {
+          offset = uintptr_t(frames[i]) - uintptr_t(info.dli_fbase);
+        }
+      }
+      __android_log_print(ANDROID_LOG_FATAL, "LibertyCrash", "#%02zu pc=%p %s %s+0x%zx", i,
+                          frames[i], soname, symbol, offset);
+    }
+  }
+#endif
   struct sigaction& original =
       signal_number == SIGILL ? original_sigill_handler_ : original_sigsegv_handler_;
   if ((original.sa_flags & SA_SIGINFO) && original.sa_sigaction) {

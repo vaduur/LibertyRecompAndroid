@@ -27,6 +27,15 @@ void ConvertTexelCTX1ToR8G8(xenos::Endian endian, void* output, const void* inpu
 void ConvertTexelDXNToR8G8(xenos::Endian endian, void* output, const void* input, size_t length);
 void ConvertTexelDXT3AToDXT3(xenos::Endian endian, void* output, const void* input, size_t length);
 void ConvertTexelDXT5AToR8(xenos::Endian endian, void* output, const void* input, size_t length);
+// DXT3A alpha block (8 explicit 4-bit nibbles) to RGBA8 with black color,
+// mirroring ConvertTexelDXT3AToDXT3 (alpha preserved, color zeroed).
+void ConvertTexelDXT3AToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length);
+// Full BC1/BC2/BC3 block decoders to 16 RGBA8 pixels (4x4 block, row-major).
+// Used where BC sampling is unavailable (Mali); DXT2/DXT4 premultiplied alpha
+// is treated as straight alpha. `length` is the destination row pitch.
+void ConvertTexelBC1ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length);
+void ConvertTexelBC2ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length);
+void ConvertTexelBC3ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length);
 
 typedef std::function<void(void*, const void*, size_t)> UntileCopyBlockCallback;
 

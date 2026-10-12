@@ -11,14 +11,46 @@ JOBS="${1:-$(( $(nproc) > 3 ? $(nproc) - 2 : 1 ))}"
 
 [ -d "$ANDROID_NDK" ] || { echo "no NDK at $ANDROID_NDK"; exit 1; }
 
-python "$APP_DIR/scripts/materialize_symlinks.py"
+"$PYTHON" "$APP_DIR/scripts/materialize_symlinks.py"
 "$APP_DIR/scripts/setup_host_tools.sh"
 
 # Snapdragon 865 and every Android 10+ arm64 device we target are ARMv8.2:
 # inline LSE atomics instead of outline-atomic calls, and native ELF TLS
 # (API 29+) instead of emulated TLS. Both are hot in the guest thread.
 CPU_FLAGS="-march=armv8.2-a -fno-emulated-tls"
-if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "-fno-emulated-tls" "$BUILD_DIR/CMakeCache.txt"; then
+# Shader-override validation tools. On Windows these are the .exe builds
+# fetched by setup_host_tools.sh; on Linux CMake auto-detects the bundled
+# dxc-linux plus any system glslangValidator/spirv-val, so only spirv-val
+# from the NDK is pinned when present.
+SHADER_TOOL_ARGS=()
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    SHADER_TOOL_ARGS+=(
+      "-DGTA4_NATIVE_SPIRV_VAL=$(npath "$ANDROID_NDK/shader-tools/windows-x86_64/spirv-val.exe")"
+      "-DGTA4_NATIVE_GLSLANG_VALIDATOR=$(npath "$REPO/out/host-tools/glslang/bin/glslangValidator.exe")"
+      "-DGTA4_NATIVE_DXC_LIBRARY_PATH=$(npath "$REPO/out/host-tools/dxc/bin/x64")"
+    )
+    ;;
+  *)
+    if [ -x "$ANDROID_NDK/shader-tools/linux-x86_64/spirv-val" ]; then
+      SHADER_TOOL_ARGS+=("-DGTA4_NATIVE_SPIRV_VAL=$ANDROID_NDK/shader-tools/linux-x86_64/spirv-val")
+    fi
+    if command -v glslangValidator >/dev/null 2>&1; then
+      SHADER_TOOL_ARGS+=("-DGTA4_NATIVE_GLSLANG_VALIDATOR=$(command -v glslangValidator)")
+    fi
+    # DXC 1.9 for Linux (setup_host_tools.sh); the bundled 1.8 segfaults on
+    # the Bink pixel shaders. Layout: dxc-linux/{bin/dxc,lib/}.
+    if [ -x "$REPO/out/host-tools/dxc-linux/bin/dxc" ]; then
+      SHADER_TOOL_ARGS+=("-DGTA4_NATIVE_DXC_LIBRARY_PATH=$REPO/out/host-tools/dxc-linux")
+    fi
+    ;;
+esac
+# Re-run CMake configure when the shader-tool set changes (e.g. glslangValidator
+# installed after the first configure): the override compiler bakes the tool
+# paths into the build, and without them the build fails at 848/1049.
+SHADER_TOOL_STAMP="$BUILD_DIR/shader_tools.args"
+if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "-fno-emulated-tls" "$BUILD_DIR/CMakeCache.txt" \
+   || [ ! -f "$SHADER_TOOL_STAMP" ] || [ "$(cat "$SHADER_TOOL_STAMP")" != "${SHADER_TOOL_ARGS[*]}" ]; then
   echo "== configuring $BUILD_TYPE in $BUILD_DIR"
   cmake -S "$REPO" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_C_FLAGS="$CPU_FLAGS" \
@@ -33,9 +65,8 @@ if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "-fno-emulated-tls" "$BUILD
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DREXGLUE_ENABLE_TRACY=OFF \
-    -DGTA4_NATIVE_SPIRV_VAL="$(cygpath -m "$ANDROID_NDK/shader-tools/windows-x86_64/spirv-val.exe")" \
-    -DGTA4_NATIVE_GLSLANG_VALIDATOR="$(cygpath -m "$REPO/out/host-tools/glslang/bin/glslangValidator.exe")" \
-    -DGTA4_NATIVE_DXC_LIBRARY_PATH="$(cygpath -m "$REPO/out/host-tools/dxc/bin/x64")"
+    "${SHADER_TOOL_ARGS[@]}"
+  printf '%s' "${SHADER_TOOL_ARGS[*]}" > "$SHADER_TOOL_STAMP"
 fi
 
 # Calls between unhooked recompiled functions bypass the weak sub_X aliases so
@@ -46,9 +77,9 @@ fi
 # them crashed in game code. DIRECT_CALLS_ENABLE=1 turns them on.
 DIRECT_CALLS="$REPO/glue/rexglue-sdk-main/gta4-recomp/tools/direct_calls.py"
 if [ "${DIRECT_CALLS_ENABLE:-0}" = "1" ]; then
-  python "$(cygpath -m "$DIRECT_CALLS")" apply
+  "$PYTHON" "$(npath "$DIRECT_CALLS")" apply
 else
-  python "$(cygpath -m "$DIRECT_CALLS")" undo
+  "$PYTHON" "$(npath "$DIRECT_CALLS")" undo
 fi
 echo "== building with $JOBS jobs"
 cmake --build "$BUILD_DIR" --target LibertyRecomp -- -j"$JOBS" || { echo "!! native build failed"; exit 1; }
@@ -75,7 +106,7 @@ echo "== checks"
 # A hook added after the hooked list was taken must not be bypassed.
 NM_OUT="$(mktemp)"
 "$NDK_BIN/llvm-nm" --defined-only "$BUILD_DIR/glue/gta4-recomp/libmain.so" > "$NM_OUT"
-python "$(cygpath -m "$DIRECT_CALLS")" check "$(cygpath -m "$NM_OUT")" || {
+"$PYTHON" "$(npath "$DIRECT_CALLS")" check "$(npath "$NM_OUT")" || {
   echo "!! run: direct_calls.py hooks <llvm-nm libmain.so> && direct_calls.py apply, then rebuild"; exit 1; }
 rm -f "$NM_OUT"
 "$NDK_BIN/llvm-nm" -D --defined-only "$JNILIBS/libmain.so" | grep -E ' SDL_main$' >/dev/null || {

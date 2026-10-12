@@ -128,6 +128,119 @@ void ConvertTexelDXT3AToDXT3(xenos::Endian endian, void* output, const void* inp
   std::memset(&output_bytes[8], 0, 8);
 }
 
+namespace {
+
+// Expands one RGB565 endpoint to 8-bit channels with bit replication.
+inline void Expand565(uint16_t packed, uint8_t& red, uint8_t& green, uint8_t& blue) {
+  const uint32_t r = packed >> 11, g = (packed >> 5) & 63, b = packed & 31;
+  red = uint8_t((r << 3) | (r >> 2));
+  green = uint8_t((g << 2) | (g >> 4));
+  blue = uint8_t((b << 3) | (b >> 2));
+}
+
+// Decodes the 8-byte BC1 color block at `block` (already endian-swapped) into
+// 16 RGBA pixels. force_opaque implements the BC2/BC3 rule (always four
+// colors); BC1 uses punch-through transparency when color0 <= color1.
+inline void DecodeBC1Colors(const uint8_t* block, uint8_t* rgba, size_t pitch, bool force_opaque) {
+  const uint16_t color0 = uint16_t(block[0] | (block[1] << 8));
+  const uint16_t color1 = uint16_t(block[2] | (block[3] << 8));
+  uint8_t r[4], g[4], b[4], a[4] = {UINT8_MAX, UINT8_MAX, UINT8_MAX, UINT8_MAX};
+  Expand565(color0, r[0], g[0], b[0]);
+  Expand565(color1, r[1], g[1], b[1]);
+  if (force_opaque || color0 > color1) {
+    r[2] = uint8_t((2 * r[0] + r[1]) / 3);
+    g[2] = uint8_t((2 * g[0] + g[1]) / 3);
+    b[2] = uint8_t((2 * b[0] + b[1]) / 3);
+    r[3] = uint8_t((r[0] + 2 * r[1]) / 3);
+    g[3] = uint8_t((g[0] + 2 * g[1]) / 3);
+    b[3] = uint8_t((b[0] + 2 * b[1]) / 3);
+  } else {
+    r[2] = uint8_t((r[0] + r[1]) / 2);
+    g[2] = uint8_t((g[0] + g[1]) / 2);
+    b[2] = uint8_t((b[0] + b[1]) / 2);
+    r[3] = g[3] = b[3] = 0;
+    a[3] = 0;
+  }
+  const uint32_t selectors =
+      uint32_t(block[4] | (block[5] << 8) | (block[6] << 16) | (block[7] << 24));
+  for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+    const uint32_t selector = (selectors >> (pixel * 2)) & 3;
+    uint8_t* out = rgba + size_t(pixel >> 2) * pitch + size_t(pixel & 3) * 4;
+    out[0] = r[selector];
+    out[1] = g[selector];
+    out[2] = b[selector];
+    out[3] = a[selector];
+  }
+}
+
+// Decodes one 8-byte BC4 alpha block into the alpha channel of 16 RGBA
+// pixels (rgb untouched, 4-byte stride between pixels).
+inline void DecodeBC4AlphaToRGBA(const uint8_t* block, uint8_t* rgba, size_t pitch) {
+  uint8_t palette[8] = {block[0], block[1]};
+  if (block[0] > block[1]) {
+    for (uint32_t i = 2; i < 8; ++i) {
+      palette[i] = uint8_t(((8 - i) * uint32_t(block[0]) + (i - 1) * uint32_t(block[1])) / 7);
+    }
+  } else {
+    for (uint32_t i = 2; i < 6; ++i) {
+      palette[i] = uint8_t(((6 - i) * uint32_t(block[0]) + (i - 1) * uint32_t(block[1])) / 5);
+    }
+    palette[6] = 0;
+    palette[7] = UINT8_MAX;
+  }
+  uint64_t selectors = 0;
+  for (uint32_t byte = 0; byte < 6; ++byte) {
+    selectors |= uint64_t(block[byte + 2]) << (byte * 8);
+  }
+  for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+    const uint32_t selector = uint32_t((selectors >> (pixel * 3)) & 7);
+    uint8_t* out = rgba + size_t(pixel >> 2) * pitch + size_t(pixel & 3) * 4;
+    out[3] = palette[selector];
+  }
+}
+
+}  // namespace
+
+void ConvertTexelDXT3AToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length) {
+  uint8_t block[8];
+  CopySwapBlock(endian, block, input, sizeof(block));
+  auto* rgba = static_cast<uint8_t*>(output);
+  for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+    const uint32_t nibble = (block[pixel >> 1] >> ((pixel & 1) * 4)) & 15;
+    uint8_t* out = rgba + size_t(pixel >> 2) * length + size_t(pixel & 3) * 4;
+    out[0] = out[1] = out[2] = 0;
+    out[3] = uint8_t(nibble * 17);
+  }
+}
+
+void ConvertTexelBC1ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length) {
+  uint8_t block[8];
+  CopySwapBlock(endian, block, input, sizeof(block));
+  DecodeBC1Colors(block, static_cast<uint8_t*>(output), length, false);
+}
+
+void ConvertTexelBC2ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length) {
+  uint8_t block[16];
+  CopySwapBlock(endian, block, input, sizeof(block));
+  auto* rgba = static_cast<uint8_t*>(output);
+  DecodeBC1Colors(block + 8, rgba, length, true);
+  // Explicit 4-bit alpha nibbles, LSB-first (applied after color: the color
+  // decoder always writes opaque alpha).
+  for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+    const uint32_t nibble = (block[pixel >> 1] >> ((pixel & 1) * 4)) & 15;
+    uint8_t* out = rgba + size_t(pixel >> 2) * length + size_t(pixel & 3) * 4;
+    out[3] = uint8_t(nibble * 17);
+  }
+}
+
+void ConvertTexelBC3ToRGBA8(xenos::Endian endian, void* output, const void* input, size_t length) {
+  uint8_t block[16];
+  CopySwapBlock(endian, block, input, sizeof(block));
+  auto* rgba = static_cast<uint8_t*>(output);
+  DecodeBC1Colors(block + 8, rgba, length, true);
+  DecodeBC4AlphaToRGBA(block, rgba, length);
+}
+
 // https://github.com/BinomialLLC/crunch/blob/ea9b8d8c00c8329791256adafa8cf11e4e7942a2/inc/crn_decomp.h#L4108
 static uint32_t TiledOffset2DRow(uint32_t y, uint32_t width, uint32_t log2_bpp) {
   uint32_t macro = ((y / 32) * (width / 32)) << (log2_bpp + 7);

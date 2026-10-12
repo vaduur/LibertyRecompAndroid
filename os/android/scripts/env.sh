@@ -18,7 +18,29 @@ export ANDROID_HOME
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export NDK_VER="${NDK_VER:-29.0.14206865}"
 export ANDROID_NDK="${ANDROID_NDK:-$ANDROID_HOME/ndk/$NDK_VER}"
-export JAVA_HOME="${JAVA_HOME:-/c/Program Files/Android/Android Studio/jbr}"
+if [ -z "${JAVA_HOME:-}" ]; then
+  # AGP 8.7's bundled Kotlin cannot parse Java 25 version strings
+  # (IllegalArgumentException in JavaVersion.parse); prefer 17/21.
+  if [ -d "/usr/lib/jvm/java-21-openjdk-amd64" ]; then
+    JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+  elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then
+    JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+  elif [ -d "/opt/android-studio/jbr" ]; then
+    JAVA_HOME="/opt/android-studio/jbr"
+  elif [ -d "$HOME/Android/Sdk" ] && [ -d "/usr/lib/jvm/default-java" ]; then
+    JAVA_HOME="/usr/lib/jvm/default-java"
+  else
+    JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
+  fi
+fi
+export JAVA_HOME
+# python3 on Linux/macOS, python on Git Bash (both exist there).
+if [ -z "${PYTHON:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then PYTHON=python3; else PYTHON=python; fi
+fi
+export PYTHON
+# cygpath on Git Bash, plain path elsewhere.
+npath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) _host=windows-x86_64 ;;
