@@ -400,6 +400,8 @@ elseif(ANDROID)
     set(LIBERTY_ANDROID_PGO "" CACHE STRING "Android libmain PGO: generate | <file.profdata>")
     target_sources(LibertyRecomp PRIVATE src/android/android_pgo_dump.cpp
         src/android/android_frame_wait_hook.cpp
+        src/android/android_perf_overlay.cpp
+        src/android/android_performance_hint.cpp
         src/android/android_stale_object_guard.cpp
         src/android/android_thread_pinning.cpp)
     # The launcher's installer: the same source inspection and installation

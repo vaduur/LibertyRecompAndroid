@@ -17,8 +17,25 @@ python "$APP_DIR/scripts/materialize_symlinks.py"
 # Snapdragon 865 and every Android 10+ arm64 device we target are ARMv8.2:
 # inline LSE atomics instead of outline-atomic calls, and native ELF TLS
 # (API 29+) instead of emulated TLS. Both are hot in the guest thread.
-CPU_FLAGS="-march=armv8.2-a -fno-emulated-tls"
-if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "-fno-emulated-tls" "$BUILD_DIR/CMakeCache.txt"; then
+#
+# LIBERTY_CPU picks the CPU target of the native code:
+#   compatible (default)  ARMv8.2 instructions, so it runs on every Android 10+
+#                         arm64 phone, with instruction scheduling tuned for
+#                         Cortex-A720-class cores (the Dimensity 8400's A725).
+#   armv9                 The Cortex-A720/A725 instruction set (ARMv9.2). Faster
+#                         on the Dimensity 8400 and newer, but the APK crashes
+#                         on phones with older cores (e.g. Cortex-A78, A77).
+case "${LIBERTY_CPU:-compatible}" in
+  armv9) CPU_TARGET="-mcpu=cortex-a720" ;;
+  compatible) CPU_TARGET="-march=armv8.2-a -mtune=cortex-a720" ;;
+  *) echo "unknown LIBERTY_CPU '$LIBERTY_CPU' (use compatible or armv9)"; exit 1 ;;
+esac
+CPU_FLAGS="$CPU_TARGET -fno-emulated-tls"
+echo "== CPU target: ${LIBERTY_CPU:-compatible} ($CPU_FLAGS)"
+# Reconfigure whenever the flags differ from the cached configuration, so a
+# new CPU target really recompiles everything instead of reusing old objects.
+if [ ! -f "$BUILD_DIR/build.ninja" ] || \
+   ! grep -qxF -- "CMAKE_CXX_FLAGS:STRING=$CPU_FLAGS" "$BUILD_DIR/CMakeCache.txt"; then
   echo "== configuring $BUILD_TYPE in $BUILD_DIR"
   cmake -S "$REPO" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_C_FLAGS="$CPU_FLAGS" \

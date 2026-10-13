@@ -12,6 +12,12 @@
 // renderer's own queue still bounds the total.
 #include <time.h>
 
+#include <android/log.h>
+
+#include "android/android_performance_hint.h"
+
+#include <atomic>
+
 #include <rex/cvar.h>
 
 #include "gta4_init.h"
@@ -26,11 +32,42 @@ REXCVAR_DEFINE_UINT32(gta4_extra_frames_in_flight, 0, "GTA IV/Performance",
                       "frames (more throughput, one frame of input latency each)")
     .range(0, 2);
 
+// Latest game update rate, shown by the in-game "Show FPS" overlay.
+std::atomic<float> g_liberty_title_fps{0.0f};
+
 extern "C" void sub_82A46D70(PPCContext& ctx, uint8_t* base) {
   const uint32_t out = ctx.r4.u32;
   __imp__sub_82A46D70(ctx, base);
   uint32_t pending = REX_LOAD_U32(out + 8);
   if (pending >= 0x80000000u) return;
+  // Title frame rate: how often the game submits a new frame (world update),
+  // as opposed to how often frames are presented. Logged every 2 seconds.
+  {
+    static uint32_t last_submitted = 0;
+    static uint32_t submitted_count = 0;
+    static timespec window_start{};
+    const uint32_t submitted = REX_LOAD_U32(out + 4);
+    if (submitted != last_submitted) {
+      last_submitted = submitted;
+      ++submitted_count;
+      gta4::android::NoteTitleFrame();
+    }
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (window_start.tv_sec == 0) window_start = now;
+    const double elapsed = double(now.tv_sec - window_start.tv_sec) +
+                           double(now.tv_nsec - window_start.tv_nsec) / 1e9;
+    if (elapsed >= 0.5) {
+      g_liberty_title_fps.store(float(submitted_count / elapsed), std::memory_order_relaxed);
+    }
+    if (elapsed >= 2.0) {
+      __android_log_print(ANDROID_LOG_WARN, "LibertyRecomp",
+                          "title-fps: %.1f (game frames submitted per second)",
+                          submitted_count / elapsed);
+      submitted_count = 0;
+      window_start = now;
+    }
+  }
   const uint32_t extra = REXCVAR_GET(gta4_extra_frames_in_flight);
   if (extra) {
     pending = pending > extra ? pending - extra : 0;

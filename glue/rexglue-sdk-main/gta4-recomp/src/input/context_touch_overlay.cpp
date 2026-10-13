@@ -1,5 +1,9 @@
 #include "input/context_touch_overlay.h"
 
+#if defined(__ANDROID__)
+#include "android/android_perf_overlay.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -62,15 +66,24 @@ bool ContextTouchOverlay::ResolveIcon(void* context, std::string_view id, Contex
 
 void ContextTouchOverlay::OnDraw(ImGuiIO& io) {
   (void)FlushContextTouchSettings();
+#if defined(__ANDROID__)
+  // The performance overlay draws whether or not the touch controls are
+  // visible (also with a physical controller) and keeps the layer repainting.
+  gta4::android::DrawPerfOverlay(ImGui::GetForegroundDrawList(), ImGui::GetFont(),
+                                 io.DisplaySize.x, io.DisplaySize.y);
+  const bool perf_overlay = gta4::android::PerfOverlayEnabled();
+#else
+  const bool perf_overlay = false;
+#endif
   if (GamepadTouchLayoutSelected()) {
     repaint_needed_ = UpdateAndDrawGamepadTouchOverlay(
         ImGui::GetForegroundDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), io.DisplaySize.x,
-        io.DisplaySize.y);
+        io.DisplaySize.y) || perf_overlay;
     return;
   }
   const auto snapshot = GetContextTouchDrawableOverlaySnapshot();
-  repaint_needed_ = snapshot.visible && snapshot.layout.mode != ContextTouchMode::kFrontend &&
-                    snapshot.layout.mode != ContextTouchMode::kMap;
+  repaint_needed_ = (snapshot.visible && snapshot.layout.mode != ContextTouchMode::kFrontend &&
+                     snapshot.layout.mode != ContextTouchMode::kMap) || perf_overlay;
   DrawContextTouchOverlay(ImGui::GetForegroundDrawList(), ImGui::GetFont(), ImGui::GetFontSize(),
                           snapshot, io.DisplaySize.x, io.DisplaySize.y,
                           icon_resolver_ ? icon_resolver_ : ResolveIcon,

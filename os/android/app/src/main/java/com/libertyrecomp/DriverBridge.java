@@ -62,6 +62,20 @@ final class DriverBridge {
 
     private DriverBridge() {}
 
+    /**
+     * The driver used while driver.txt does not exist: the bundled Turnip in
+     * the Adreno build, the device's own driver in the Mali build (Turnip is
+     * Adreno-only and cannot load on any other GPU).
+     */
+    static String defaultMode() {
+        return SYSTEM.equals(BuildConfig.DEFAULT_DRIVER) ? SYSTEM : TURNIP;
+    }
+
+    /** True in the APK built with -PlibertyGpu=mali. */
+    static boolean isMaliBuild() {
+        return "mali".equals(BuildConfig.GPU_FAMILY);
+    }
+
     static native String nativeInit(String nativeLibraryDir, String internalDriverDir,
                                     String driverFilename, boolean custom,
                                     boolean allowSystemFallback);
@@ -122,6 +136,30 @@ final class DriverBridge {
         return status;
     }
 
+    /** Renderer-required Vulkan features, in the order the report names them. */
+    private static final String[] REQUIRED_FEATURES = {
+            "shaderInt64", "depthClamp", "sampleRateShading",
+            "independentBlend", "runtimeDescriptorArray", "descriptorBindingPartiallyBound",
+            "bufferDeviceAddress",
+    };
+
+    /**
+     * Names of required features the driver explicitly reports as absent
+     * (value 0). A feature that could not be queried (-1) or a status without
+     * the block at all counts as present: the renderer makes the final check.
+     */
+    private static String missingFeatures(JSONObject features) {
+        if (features == null) return "";
+        StringBuilder missing = new StringBuilder();
+        for (String feature : REQUIRED_FEATURES) {
+            if (features.optInt(feature, -1) == 0) {
+                if (missing.length() > 0) missing.append(", ");
+                missing.append(feature);
+            }
+        }
+        return missing.toString();
+    }
+
     /**
      * Null when the initialized driver can run the game, otherwise a message
      * for the player saying what is missing.
@@ -140,6 +178,7 @@ final class DriverBridge {
         org.json.JSONArray devices = json.optJSONArray("devices");
         long best = 0;
         String name = "unknown GPU";
+        JSONObject bestFeatures = null;
         for (int i = 0; devices != null && i < devices.length(); ++i) {
             JSONObject device = devices.optJSONObject(i);
             if (device == null) continue;
@@ -147,14 +186,25 @@ final class DriverBridge {
             if (api >= best) {
                 best = api;
                 name = device.optString("name", name);
+                bestFeatures = device.optJSONObject("features");
             }
         }
-        if (best >= VULKAN_1_2) return null;
+        if (best >= VULKAN_1_2) {
+            String missing = missingFeatures(bestFeatures);
+            if (missing.isEmpty()) return null;
+            return "This device's GPU (" + name + ") has Vulkan 1.2 but its driver lacks "
+                    + "features the game's renderer requires: " + missing + "."
+                    + "\n\nA newer system update may add them. Please attach the launch report "
+                    + "when reporting this.";
+        }
         String fallbackFrom = json.optString("fallback_from");
         return "This device's GPU (" + name + ") only offers Vulkan " + (best >> 22) + "."
                 + ((best >> 12) & 0x3FF) + " through its own driver, and the game needs Vulkan 1.2."
                 + (fallbackFrom.isEmpty()
-                        ? "\n\nIf driver.txt says \"system\", delete it to use the bundled Turnip driver."
+                        ? (isMaliBuild()
+                                ? "\n\nThe phone's system GPU driver is too old for the game. Updating the "
+                                        + "system software may bring a newer driver."
+                                : "\n\nIf driver.txt says \"system\", delete it to use the bundled Turnip driver.")
                         : "\n\nThe selected custom driver (the bundled Turnip unless driver.txt names "
                                 + "another) could not be used either: " + fallbackFrom);
     }

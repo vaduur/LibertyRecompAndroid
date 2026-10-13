@@ -131,8 +131,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
         properties.deviceName);
     return nullptr;
   }
-  if (with_native_shader_support &&
-      (!supported_features.shaderClipDistance || !supported_features.sampleRateShading)) {
+  if (with_native_shader_support && !supported_features.shaderClipDistance) {
+    // Shaders are rewritten at load (util::StripSpirvClipDistance) so user clip
+    // planes are skipped instead of making the device unusable.
+    REXLOG_WARN("Vulkan device '{}' lacks shaderClipDistance; user clip planes will be ignored",
+                properties.deviceName);
+  }
+  if (with_native_shader_support && !supported_features.sampleRateShading) {
     // These capabilities are declared statically by the cached title vertex
     // shaders and the per-sample fullscreen conversion shaders, respectively.
     // A draw-time flag cannot make either shader interface legal without them.

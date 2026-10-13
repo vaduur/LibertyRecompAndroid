@@ -2,16 +2,114 @@
     <img src="docs/android/images/banner_android_v4.png" alt="Liberty Recompiled for Android" width="800"/>
 </p>
 
-# LibertyRecompAndroid
+# LibertyRecompAndroid — Mali Edition (Alpha)
+
+> [!WARNING]
+> **Alpha, work in progress.** This is a fork of
+> [LibertyRecompAndroid](https://github.com/vaduur/LibertyRecompAndroid) that gets the game running
+> on **ARM Mali GPUs**, starting with the **MediaTek Dimensity 8400 (Mali-G720 MC7)**. It is tested
+> on one phone only. Expect bugs, crashes and rough edges. Use the original project if you have a
+> Snapdragon (Adreno) device.
 
 An Android port of [Liberty Recompiled](https://github.com/OZORDI/LibertyRecomp), the static
 recompilation of the Xbox 360 version of Grand Theft Auto IV. It runs the recompiled game natively
-on arm64 Android phones and handhelds with a Snapdragon (Adreno) GPU, using Vulkan through a bundled
-Mesa Turnip driver. There is no emulator in between.
+on arm64 Android devices. There is no emulator in between. This fork targets Mali GPUs through the
+phone's own Vulkan driver; the original targets Adreno GPUs through a bundled Mesa Turnip driver.
 
-<p align="center">
-    <img src="docs/android/images/ingame.jpg" alt="GTA IV running on a Retroid Pocket 5" width="800"/>
-</p>
+**Latest version: 0.5.8-mali-alpha-0.13.** Download it from the [Releases](../../releases) page.
+
+## Mali Edition status
+
+Tested on one device: a Xiaomi phone with a **Dimensity 8400 (Mali-G720 MC7)**, Android 16,
+Mali driver r49p1.
+
+What works:
+
+- The game installs, boots and runs: the world renders with textures, and the HUD, subtitles,
+  lights, audio and the on-screen gamepad work.
+- **Graphics settings in the launcher** (see below), so most tuning no longer needs `args.txt`.
+- **A performance overlay** with a real FPS counter (see below).
+- The APK builds automatically with GitHub Actions on the `mali-dimensity-8400` branch.
+
+Known limitations:
+
+- **Tested on a single Mali device.** Other Mali / Immortalis GPUs may behave differently.
+- **Performance is limited:** below 30 FPS in the city on the Dimensity 8400, better indoors.
+  Profiling shows the renderer and the GPU have time to spare; the limit is the **CPU work of the
+  game itself** (traffic, pedestrians, world streaming). That is why lowering the resolution or
+  using FSR barely helps, while *Population density* and *Draw distance* do.
+- **User clip planes are skipped** (see below), so some reflections or cut-off geometry may look
+  wrong.
+- **Higher memory use and possible stutter when textures load**, because compressed textures are
+  decoded on the CPU (see below).
+- Occasional crashes may still happen. Save often.
+
+### Launcher: graphics settings
+
+The **Graphics settings** card changes the game's settings without editing files: resolution,
+FSR 1 upscaler and quality, anti-aliasing, frame limit, draw distance, population density, shadow
+quality, motion blur, reflection anti-aliasing and run-ahead frames. Every option starts on
+**Default**, which keeps the value from `args.txt`. Press **Save changes**, then **Play**
+(Play also saves any unsaved changes first). **Reset to default** returns every option to Default.
+
+For the best frame rate on Mali, start with **Population density** and **Draw distance**, since the
+game is CPU-bound. **Run-ahead frames** at 1 or 2 can raise the frame rate a little, at the cost
+of some input delay.
+
+### Launcher: performance overlay
+
+The **Performance overlay** card adds a small box in the top-left corner during gameplay. Each line
+has its own checkbox, so you can show only the FPS counter, for example:
+
+| Line | Shows |
+|---|---|
+| FPS | The game's **real** frame rate (how often the world updates), green / yellow / red |
+| Frame time | Milliseconds per game frame |
+| CPU | The game's CPU usage and the fastest core's clock |
+| GPU | GPU usage, where the phone allows apps to read it (otherwise `n/a`) |
+| Memory | RAM used by the game |
+| Temperature | Battery temperature |
+
+> [!NOTE]
+> System counters such as Xiaomi's **Game Turbo** count every frame sent to the screen, including
+> repeated frames, and can show 35–40 FPS while the game actually updates far less often. Use the
+> overlay's FPS counter instead. Opening the Game Turbo panel also pauses the game.
+
+### Changes made for Mali
+
+- **Android C++ library fixes.** The NDK's libc++ lacks `std::jthread`/`std::stop_token`,
+  floating-point `std::from_chars` and `std::atomic_ref`. Small fallbacks were added so the native
+  libraries compile for Android.
+- **No `shaderClipDistance` on Mali.** Mali drivers do not offer clip distances, which the game's
+  shaders use. Shaders are rewritten as they load: clip-distance outputs become ordinary unused
+  outputs, so they are valid on Mali (all 650 affected shaders pass the Vulkan validator). User
+  clip planes are skipped as a result.
+- **No BC (DXT) texture compression on Mali.** The game's DXT1/3/5 textures are created as BC
+  textures, which Mali cannot sample, so almost the whole world failed to draw. When the GPU lacks
+  BC support, those textures are now decoded to RGBA8 on the CPU as they load. This uses 4–8x more
+  texture memory. Converting to ASTC (Mali's native format) would be the better long-term fix.
+- **Launcher settings are applied reliably.** The runtime's command-line parser rejects an option
+  given twice and then ignores *every* option, so the launcher now removes repeated options before
+  starting the game (the launcher's choice wins over `args.txt`).
+- **Profiling on Android.** Native profile captures are saved to the visible
+  `Android/data/com.libertyrecomp/files/LibertyRecomp/Diagnostics/` folder, and
+  `--gta4_profile_native_capture_delay_seconds` starts a capture after a delay, so it records
+  gameplay instead of loading screens.
+
+Devices with an Adreno GPU take the original code paths; the fallbacks above only switch on when
+the GPU lacks the feature.
+
+### Reporting problems
+
+Feedback and logs from other Mali / Dimensity devices are welcome in [Issues](../../issues). When
+reporting, attach `Android/data/com.libertyrecomp/files/last_launch.txt` and, if the game starts,
+a log from **Play (Debug Log)** (`files/debug_logs/`).
+
+Mali Edition by [prollynotzjay](https://github.com/prollynotzjay/LibertyRecompAndroidMaliVer).
+
+---
+
+The rest of this README is from the original project and describes the Adreno build.
 
 **DISCLAIMER!**
 
@@ -74,8 +172,10 @@ Known problems:
 
 **Not supported:**
 
-- **ARM Mali / Immortalis GPUs.** This covers most Exynos chips before the 2200, MediaTek
-  Dimensity/Helio and Google Tensor.
+- **ARM Mali / Immortalis GPUs** in the normal build. This covers most Exynos chips before the
+  2200, MediaTek Dimensity/Helio and Google Tensor. An **untested** Mali build that uses the
+  phone's own Vulkan driver is described in [MALI.md](docs/android/MALI.md) (aimed at the
+  Dimensity 8400).
 - **Samsung Xclipse GPUs** (Exynos 2200 and newer).
 - **PowerVR GPUs** and anything else that is not an Adreno.
 
@@ -182,6 +282,7 @@ The full walkthrough, including the `install/` folder and older versions, is in
 | [Advanced configuration](docs/android/ADVANCED.md) | `args.txt` settings, live tuning, driver selection, logs, performance presets |
 | [What was done for Android](docs/android/PORTING.md) | Technical write-up of the port: build, platform layer, driver, renderer and stability work |
 | [Building from source](docs/android/BUILDING.md) | Building the APK yourself |
+| [Mali build](docs/android/MALI.md) | The untested variant for Mali / Immortalis GPUs (Dimensity 8400) |
 | [Upstream README](README_UPSTREAM.md) | The original Liberty Recompiled README (desktop builds, mods, online) |
 
 ## Credits

@@ -16,18 +16,43 @@ plugins {
 val sdlJavaDir = rootProject.file(
     "../../glue/rexglue-sdk-main/thirdparty/sdl3/android-project/app/src/main/java")
 
+// GPU family this APK is built for: -PlibertyGpu=adreno (default) or =mali.
+// "mali" makes the device's own Vulkan driver the default instead of the
+// bundled Mesa Turnip (which only exists for Adreno), drops the Adreno-only
+// TU_DEBUG setting, and tags the version name with "-mali". Everything else is
+// identical, so an Adreno and a Mali APK differ only in first-launch defaults;
+// the player can still switch drivers on the launcher either way.
+val libertyGpu = (project.findProperty("libertyGpu") as String? ?: "adreno").lowercase()
+require(libertyGpu == "adreno" || libertyGpu == "mali") {
+    "-PlibertyGpu must be 'adreno' or 'mali', got '$libertyGpu'"
+}
+
 android {
     namespace   = "com.libertyrecomp"
     compileSdk  = 35
     ndkVersion  = "29.0.14206865"
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.libertyrecomp"
         // 28: ASharedMemory (26) for guest memory and AAudio (27) for audio.
         minSdk        = 29
         targetSdk     = 35
-        versionCode   = 16
-        versionName   = "0.5.9"
+        // Above upstream 0.5.9 (16) and Mali alpha 1.3 (15), so it installs over both.
+        versionCode   = 17
+        // Shown as e.g. 0.5.9-mali-alpha-1.3. The workflow reads both the
+        // base version and versionSuffix to name the APK.
+        val versionSuffix = "-alpha-1.3"
+        versionName   = "0.5.9" + (if (libertyGpu == "mali") "-mali" else "") + versionSuffix
+
+        // Read by DriverBridge.defaultMode(): the driver used when driver.txt
+        // does not exist yet.
+        buildConfigField("String", "DEFAULT_DRIVER",
+            if (libertyGpu == "mali") "\"system\"" else "\"turnip\"")
+        buildConfigField("String", "GPU_FAMILY", "\"$libertyGpu\"")
 
         ndk {
             abiFilters += listOf("arm64-v8a")

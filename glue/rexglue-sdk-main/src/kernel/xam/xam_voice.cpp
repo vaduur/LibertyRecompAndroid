@@ -28,6 +28,8 @@
 #include <mutex>
 #include <span>
 #include <thread>
+
+#include <rex/thread/jthread_compat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -67,10 +69,10 @@ struct VoiceHandleState {
   ~VoiceHandleState() { Stop(); }
 
   void Start() {
-    capture_worker = std::jthread(
-        [this](std::stop_token stop_token) { CaptureWorkerMain(stop_token); });
-    playback_worker = std::jthread(
-        [this](std::stop_token stop_token) { PlaybackWorkerMain(stop_token); });
+    capture_worker = rex::compat::jthread(
+        [this](rex::compat::stop_token stop_token) { CaptureWorkerMain(stop_token); });
+    playback_worker = rex::compat::jthread(
+        [this](rex::compat::stop_token stop_token) { PlaybackWorkerMain(stop_token); });
   }
 
   bool EnqueueCapture(VoiceWorkItem item) {
@@ -168,7 +170,7 @@ struct VoiceHandleState {
     memory::store_and_swap<uint32_t>(packet + 0, 0);
   }
 
-  bool WaitForWork(std::stop_token stop_token, bool capture,
+  bool WaitForWork(rex::compat::stop_token stop_token, bool capture,
                    VoiceWorkItem& item) {
     std::unique_lock lock(mutex);
     condition.wait(lock, [&] {
@@ -187,7 +189,7 @@ struct VoiceHandleState {
     return stopping;
   }
 
-  void CaptureWorkerMain(std::stop_token stop_token) {
+  void CaptureWorkerMain(rex::compat::stop_token stop_token) {
     VoiceWorkItem item;
     while (WaitForWork(stop_token, true, item)) {
       if (!audio_device || !capture_codec || !item.payload_size) {
@@ -227,7 +229,7 @@ struct VoiceHandleState {
     }
   }
 
-  void PlaybackWorkerMain(std::stop_token stop_token) {
+  void PlaybackWorkerMain(rex::compat::stop_token stop_token) {
     VoiceWorkItem item;
     while (WaitForWork(stop_token, false, item)) {
       if (!audio_device || !playback_codec || item.playback_payload.empty()) {
@@ -263,8 +265,8 @@ struct VoiceHandleState {
   std::deque<VoiceWorkItem> playback_queue;
   bool stopping = false;
   std::once_flag stop_once;
-  std::jthread capture_worker;
-  std::jthread playback_worker;
+  rex::compat::jthread capture_worker;
+  rex::compat::jthread playback_worker;
 };
 
 std::mutex g_voice_mutex;

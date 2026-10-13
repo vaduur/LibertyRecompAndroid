@@ -20,6 +20,7 @@
 #include <rex/assert.h>
 #include <rex/thread.h>
 #include <rex/thread/timer_queue.h>
+#include <rex/thread/jthread_compat.h>
 
 namespace dp = disruptorplus;
 
@@ -40,7 +41,7 @@ class TimerQueue {
         consumed_(wait_strategy_) {
     claim_strategy_.add_claim_barrier(consumed_);
     dispatch_thread_ =
-        std::jthread([this](std::stop_token stop_token) { TimerThreadMain(stop_token); });
+        rex::compat::jthread([this](rex::compat::stop_token stop_token) { TimerThreadMain(stop_token); });
   }
 
   ~TimerQueue() {
@@ -52,10 +53,10 @@ class TimerQueue {
     wait_item->Disarm();
     QueueTimer(std::move(wait_item));
 
-    // std::jthread auto-joins on destruction
+    // rex::compat::jthread auto-joins on destruction
   }
 
-  void TimerThreadMain(std::stop_token stop_token) {
+  void TimerThreadMain(rex::compat::stop_token stop_token) {
     dp::sequence_t next_sequence = 0;
     const auto comp = [](const std::shared_ptr<WaitItem>& left,
                          const std::shared_ptr<WaitItem>& right) {
@@ -136,7 +137,7 @@ class TimerQueue {
     return wait_item_weak;
   }
 
-  std::jthread::id dispatch_thread_id() const { return dispatch_thread_.get_id(); }
+  rex::compat::jthread::id dispatch_thread_id() const { return dispatch_thread_.get_id(); }
 
  private:
   // This ring buffer will be used to introduce timers queued by the public API
@@ -149,7 +150,7 @@ class TimerQueue {
   // This is a _sorted_ (ascending due_) list of active timers managed by a
   // dedicated thread
   std::forward_list<std::shared_ptr<WaitItem>> wait_queue_;
-  std::jthread dispatch_thread_;
+  rex::compat::jthread dispatch_thread_;
 };
 
 rex::thread::TimerQueue timer_queue_;

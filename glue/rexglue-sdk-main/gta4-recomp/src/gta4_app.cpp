@@ -40,6 +40,9 @@
 #include "input/context_touch_controls.h"
 #include "input/context_touch_overlay.h"
 #include "input/context_touch_settings.h"
+#if defined(__ANDROID__)
+#include "android/android_performance_hint.h"
+#endif
 #include "rpf_button_prompts.h"
 #include <network/community_multiplayer.h>
 #include <network/gta4_voice_audio.h>
@@ -1017,6 +1020,7 @@ void GTA4App::OnPostSetup() {
   StartLiveCvarWatcher(rex::filesystem::GetUserFolder() / "live_cvars.txt");
   StartHotThreadPinning();
   StartThermalLog();
+  gta4::android::StartPerformanceHint();
 #endif
   gta4::presentation::InitializeOptions();
   rex::graphics::gta4_native::InitializeAntiAliasingController();

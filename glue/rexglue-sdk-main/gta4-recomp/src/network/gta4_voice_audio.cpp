@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 
 #include <rex/logging.h>
+#include <rex/thread/jthread_compat.h>
 #include <rex/runtime.h>
 #include <rex/system/xam/live_compatibility.h>
 #include <rex/system/xmemory.h>
@@ -39,7 +40,7 @@ class SDLVoiceAudioDevice final : public rex::system::xam::IVoiceAudioDevice {
  public:
   SDLVoiceAudioDevice()
       : lifecycle_signal_(std::make_shared<LifecycleSignal>()),
-        lifecycle_worker_([this](std::stop_token stop_token) { LifecycleWorkerMain(stop_token); }) {
+        lifecycle_worker_([this](rex::compat::stop_token stop_token) { LifecycleWorkerMain(stop_token); }) {
   }
 
   ~SDLVoiceAudioDevice() override {
@@ -260,7 +261,7 @@ class SDLVoiceAudioDevice final : public rex::system::xam::IVoiceAudioDevice {
     signal->condition.notify_all();
   }
 
-  bool WaitForLifecycle(std::stop_token stop_token) {
+  bool WaitForLifecycle(rex::compat::stop_token stop_token) {
     bool active = false;
     {
       std::lock_guard lock(state_mutex_);
@@ -282,7 +283,7 @@ class SDLVoiceAudioDevice final : public rex::system::xam::IVoiceAudioDevice {
     return !stop_token.stop_requested();
   }
 
-  void LifecycleWorkerMain(std::stop_token stop_token) {
+  void LifecycleWorkerMain(rex::compat::stop_token stop_token) {
     while (WaitForLifecycle(stop_token))
       ReconcileLifecycle();
     ShutdownAudio();
@@ -592,7 +593,7 @@ class SDLVoiceAudioDevice final : public rex::system::xam::IVoiceAudioDevice {
   std::string capture_error_;
   std::string playback_error_;
   std::shared_ptr<LifecycleSignal> lifecycle_signal_;
-  std::jthread lifecycle_worker_;
+  rex::compat::jthread lifecycle_worker_;
 };
 
 class Gta4VoiceSampleCodecState final : public rex::system::xam::IVoiceSampleCodecState {

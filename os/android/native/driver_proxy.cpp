@@ -193,6 +193,46 @@ bool ProbeSystemIdentity(std::string& identity) {
   return found;
 }
 
+// The capabilities the native renderer refuses to start without; the check
+// that enforces them is in ui/vulkan/vulkan_device.cpp (with_native_shader_support).
+// Reported per device so that a GPU lacking one - an unfamiliar vendor driver,
+// say - produces a readable message on the launcher instead of a renderer that
+// fails inside the game. Each value is 1 (present), 0 (absent) or -1 (could not
+// be queried); only an explicit 0 is ever treated as a problem.
+std::string CapabilityJson(VkInstance instance, VkPhysicalDevice device, uint32_t requested_api,
+                           uint32_t device_api) {
+  const auto features = Get<PFN_vkGetPhysicalDeviceFeatures>(instance, "vkGetPhysicalDeviceFeatures");
+  const auto features2 = Get<PFN_vkGetPhysicalDeviceFeatures2>(instance, "vkGetPhysicalDeviceFeatures2");
+  auto flag = [](int value) { return std::to_string(value); };
+  int int64 = -1, clamp = -1, clip = -1, sample_rate = -1, blend = -1;
+  int runtime_array = -1, partially_bound = -1, device_address = -1;
+  if (features) {
+    VkPhysicalDeviceFeatures base{};
+    features(device, &base);
+    int64 = base.shaderInt64 ? 1 : 0;
+    clamp = base.depthClamp ? 1 : 0;
+    clip = base.shaderClipDistance ? 1 : 0;
+    sample_rate = base.sampleRateShading ? 1 : 0;
+    blend = base.independentBlend ? 1 : 0;
+  }
+  if (features2 && requested_api >= VK_API_VERSION_1_2 && device_api >= VK_API_VERSION_1_2) {
+    VkPhysicalDeviceVulkan12Features v12{};
+    v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 extended{};
+    extended.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    extended.pNext = &v12;
+    features2(device, &extended);
+    runtime_array = v12.runtimeDescriptorArray ? 1 : 0;
+    partially_bound = v12.descriptorBindingPartiallyBound ? 1 : 0;
+    device_address = v12.bufferDeviceAddress ? 1 : 0;
+  }
+  return "{\"shaderInt64\":" + flag(int64) + ",\"depthClamp\":" + flag(clamp) +
+         ",\"shaderClipDistance\":" + flag(clip) + ",\"sampleRateShading\":" + flag(sample_rate) +
+         ",\"independentBlend\":" + flag(blend) + ",\"runtimeDescriptorArray\":" + flag(runtime_array) +
+         ",\"descriptorBindingPartiallyBound\":" + flag(partially_bound) +
+         ",\"bufferDeviceAddress\":" + flag(device_address) + "}";
+}
+
 // Uses only functions from the selected loader, never this proxy's exports.
 // A custom selection requires Vulkan 1.2 driver identity support. RP6/T30
 // supports this; failing explicitly is safer than guessing from a GPU name.
@@ -275,7 +315,8 @@ bool VerifyInstance(VkInstance instance, uint32_t requested_api,
                     ",\"device_id\":" + std::to_string(basic.deviceID) +
                     ",\"driver_id\":" + std::to_string(driver.driverID) +
                     ",\"driver_name\":" + Quote(driver.driverName) +
-                    ",\"driver_info\":" + Quote(driver.driverInfo) + "}";
+                    ",\"driver_info\":" + Quote(driver.driverInfo) +
+                    ",\"features\":" + CapabilityJson(instance, devices[i], requested_api, basic.apiVersion) + "}";
   }
   devices_json += "]";
   return true;

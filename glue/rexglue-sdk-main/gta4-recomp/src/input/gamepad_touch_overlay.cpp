@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -20,6 +21,16 @@ REXCVAR_DEFINE_STRING(gta4_touch_layout, "gamepad", "GTA IV/Input/Touch",
                       "On-screen touch controls: gamepad (a fixed Xbox 360 controller) or context "
                       "(the context-sensitive layout)")
     .allowed({"gamepad", "context"});
+REXCVAR_DEFINE_STRING(gta4_touch_camera, "swipe", "GTA IV/Input/Touch",
+                      "How the right half of the screen moves the camera: swipe (the camera "
+                      "follows your finger, like a mouse) or stick (a virtual joystick)")
+    .allowed({"swipe", "stick"});
+REXCVAR_DEFINE_DOUBLE(gta4_touch_swipe_sensitivity, 1.0, "GTA IV/Input/Touch",
+                      "Swipe camera speed; 0.5 is half as fast, 2.0 twice as fast");
+REXCVAR_DEFINE_DOUBLE(gta4_touch_gamepad_scale, 1.0, "GTA IV/Input/Touch",
+                      "Size of the on-screen gamepad's buttons (0.75 to 1.35)");
+REXCVAR_DEFINE_DOUBLE(gta4_touch_gamepad_opacity, 1.0, "GTA IV/Input/Touch",
+                      "Opacity of the on-screen gamepad (0.3 faint to 1.6 strong)");
 
 namespace gta4::input {
 namespace {
@@ -47,6 +58,14 @@ constexpr ImU32 kRing = IM_COL32(215, 215, 215, 105);
 constexpr ImU32 kLabel = IM_COL32(230, 230, 230, 150);
 constexpr ImU32 kKnob = IM_COL32(225, 225, 225, 130);
 
+// The colours above with their alpha scaled by gta4_touch_gamepad_opacity.
+ImU32 Faded(ImU32 color) {
+  const float opacity = float(std::clamp(REXCVAR_GET(gta4_touch_gamepad_opacity), 0.3, 1.6));
+  const uint32_t alpha = (color >> IM_COL32_A_SHIFT) & 0xFF;
+  const uint32_t scaled = uint32_t(std::clamp(alpha * opacity, 0.0f, 255.0f));
+  return (color & ~IM_COL32_A_MASK) | (scaled << IM_COL32_A_SHIFT);
+}
+
 struct Finger {
   int control = -1;
 };
@@ -61,7 +80,17 @@ struct State {
   float stick_x[2] = {0, 0};  // -1..1, screen space (y down)
   float stick_y[2] = {0, 0};
   std::unordered_map<uint64_t, Finger> fingers;
+  // Swipe camera: the finger's last position and the time of the last update,
+  // and whether the right stick is currently driven by a swipe.
+  ImVec2 swipe_last = {0, 0};
+  bool swipe_tracking = false;
+  bool swipe_active = false;
+  std::chrono::steady_clock::time_point last_update{};
 };
+
+bool SwipeCamera() noexcept {
+  return REXCVAR_GET(gta4_touch_camera) != "stick";
+}
 
 State& state() {
   static State s;
@@ -81,24 +110,28 @@ std::array<Control, kControlCount> BuildLayout(float w, float h) {
     c[n++] = Control{kind, x, y, r, button, index, label, color};
   };
   const float lx = 0.12f * w;
+  // gta4_touch_gamepad_scale grows or shrinks the buttons and the spacing
+  // inside each group (D-pad, face buttons, shoulder pairs) around fixed
+  // anchors, so the groups stay where thumbs expect them.
+  const float k = float(std::clamp(REXCVAR_GET(gta4_touch_gamepad_scale), 0.75, 1.35));
   // Sticks first: kLeftStick, kRightStick. The right stick has no resting
   // place; it appears where the camera finger lands.
-  add(Kind::kStick, lx, 0.72f * h, 0.105f * h, 0, 0, "L");
+  add(Kind::kStick, lx, 0.72f * h, 0.105f * h * k, 0, 0, "L");
   add(Kind::kStick, w * 0.75f, 0.60f * h, 0.095f * h, 0, 1, "R");
   // D-pad, right of the left stick.
-  const float dx = lx + 0.26f * h, dy = 0.86f * h, arm = 0.078f * h, dr = 0.042f * h;
+  const float dx = lx + 0.26f * h, dy = 0.86f * h, arm = 0.078f * h * k, dr = 0.042f * h * k;
   add(Kind::kArrow, dx, dy - arm, dr, rex::input::X_INPUT_GAMEPAD_DPAD_UP, 0, "");
   add(Kind::kArrow, dx, dy + arm, dr, rex::input::X_INPUT_GAMEPAD_DPAD_DOWN, 1, "");
   add(Kind::kArrow, dx - arm, dy, dr, rex::input::X_INPUT_GAMEPAD_DPAD_LEFT, 2, "");
   add(Kind::kArrow, dx + arm, dy, dr, rex::input::X_INPUT_GAMEPAD_DPAD_RIGHT, 3, "");
   // LT over LB above the left stick, L3 beside LB.
-  const float br = 0.048f * h, small = 0.036f * h;
+  const float br = 0.048f * h * k, small = 0.036f * h * k;
   add(Kind::kTrigger, lx, 0.355f * h, br, 0, 0, "LT");
   add(Kind::kButton, lx, 0.475f * h, br, rex::input::X_INPUT_GAMEPAD_LEFT_SHOULDER, 0, "LB");
-  add(Kind::kButton, lx + 0.115f * h, 0.475f * h, small, rex::input::X_INPUT_GAMEPAD_LEFT_THUMB, 0,
+  add(Kind::kButton, lx + 0.115f * h * k, 0.475f * h, small, rex::input::X_INPUT_GAMEPAD_LEFT_THUMB, 0,
       "L3");
   // A/B/X/Y diamond in the lower right, with the Xbox 360 letter colours.
-  const float fx = w - 0.52f * h, fy = 0.80f * h, fs = 0.097f * h, fr = 0.052f * h;
+  const float fx = w - 0.52f * h, fy = 0.80f * h, fs = 0.097f * h * k, fr = 0.052f * h * k;
   add(Kind::kButton, fx, fy + fs, fr, rex::input::X_INPUT_GAMEPAD_A, 0, "A",
       IM_COL32(110, 205, 80, 170));
   add(Kind::kButton, fx + fs, fy, fr, rex::input::X_INPUT_GAMEPAD_B, 0, "B",
@@ -111,10 +144,10 @@ std::array<Control, kControlCount> BuildLayout(float w, float h) {
   const float rx = w - 0.17f * h;
   add(Kind::kTrigger, rx, 0.47f * h, br, 0, 1, "RT");
   add(Kind::kButton, rx, 0.59f * h, br, rex::input::X_INPUT_GAMEPAD_RIGHT_SHOULDER, 0, "RB");
-  add(Kind::kButton, rx - 0.115f * h, 0.59f * h, small, rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB, 0,
+  add(Kind::kButton, rx - 0.115f * h * k, 0.59f * h, small, rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB, 0,
       "R3");
   // Back and Start in the middle of the top edge.
-  const float sr = 0.036f * h;
+  const float sr = 0.036f * h * k;
   add(Kind::kButton, 0.44f * w, 0.075f * h, sr, rex::input::X_INPUT_GAMEPAD_BACK, 0, "BACK");
   add(Kind::kButton, 0.56f * w, 0.075f * h, sr, rex::input::X_INPUT_GAMEPAD_START, 0, "START");
   return c;
@@ -127,7 +160,9 @@ int HitTest(const std::array<Control, kControlCount>& controls, float px, float 
   for (size_t i = 0; i < controls.size(); ++i) {
     const auto& control = controls[i];
     if (control.r <= 0.0f || control.kind == Kind::kStick) continue;
-    const float capture = control.r * 1.25f;
+    // A finger that lands just outside a button still presses it; the nearest
+    // button (relative to its size) wins where two capture areas overlap.
+    const float capture = control.r * 1.4f;
     const float distance = std::hypot(px - control.x, py - control.y);
     if (distance <= capture && distance / capture < best_distance) {
       best_distance = distance / capture;
@@ -163,18 +198,18 @@ void Draw(ImDrawList* draw, ImFont* font, float font_size, const State& s) {
     const float radius = control.r;
     if (control.kind == Kind::kStick) {
       // The camera stick shows only while it is being used.
-      if (control.index == 1 && !active) continue;
+      if (control.index == 1 && (!active || SwipeCamera())) continue;
       const ImVec2 center = active ? s.stick_origin[control.index] : ImVec2(control.x, control.y);
-      draw->AddCircleFilled(center, radius, kFill, 48);
-      draw->AddCircle(center, radius, kRing, 48, std::max(1.0f, radius * 0.025f));
+      draw->AddCircleFilled(center, radius, Faded(kFill), 48);
+      draw->AddCircle(center, radius, Faded(kRing), 48, std::max(1.0f, radius * 0.025f));
       const ImVec2 knob(center.x + s.stick_x[control.index] * radius * 0.55f,
                         center.y + s.stick_y[control.index] * radius * 0.55f);
-      draw->AddCircleFilled(knob, radius * 0.34f, kKnob, 32);
+      draw->AddCircleFilled(knob, radius * 0.34f, Faded(kKnob), 32);
       continue;
     }
     const ImVec2 center(control.x, control.y);
-    draw->AddCircleFilled(center, radius, active ? kFillHeld : kFill, 48);
-    draw->AddCircle(center, radius, kRing, 48, std::max(1.0f, radius * 0.025f));
+    draw->AddCircleFilled(center, radius, Faded(active ? kFillHeld : kFill), 48);
+    draw->AddCircle(center, radius, Faded(kRing), 48, std::max(1.0f, radius * 0.025f));
     if (control.kind == Kind::kArrow) {
       const float t = radius * 0.42f;
       ImVec2 a, b, c;
@@ -184,7 +219,7 @@ void Draw(ImDrawList* draw, ImFont* font, float font_size, const State& s) {
         case 2: a = {center.x - t, center.y}; b = {center.x + t * 0.6f, center.y + t}; c = {center.x + t * 0.6f, center.y - t}; break;
         default: a = {center.x + t, center.y}; b = {center.x - t * 0.6f, center.y - t}; c = {center.x - t * 0.6f, center.y + t}; break;
       }
-      draw->AddTriangleFilled(a, b, c, kLabel);
+      draw->AddTriangleFilled(a, b, c, Faded(kLabel));
       continue;
     }
     // Letters fill most of the circle; longer labels are fitted to its width.
@@ -193,7 +228,7 @@ void Draw(ImDrawList* draw, ImFont* font, float font_size, const State& s) {
         : natural.x > 0.0f ? std::min(radius * 0.62f, font_size * radius * 1.35f / natural.x)
                            : font_size;
     draw->AddText(font, size, LabelOrigin(font, size, control.label, center),
-                  control.label_color ? control.label_color : kLabel, control.label);
+                  Faded(control.label_color ? control.label_color : kLabel), control.label);
   }
 }
 
@@ -220,10 +255,17 @@ bool UpdateAndDrawGamepadTouchOverlay(ImDrawList* draw, ImFont* font, float font
     s.fingers.clear();
     s.held.fill(false);
     s.stick_x[0] = s.stick_x[1] = s.stick_y[0] = s.stick_y[1] = 0.0f;
+    s.swipe_tracking = s.swipe_active = false;
     return false;
   }
   s.visible = true;
   s.controls = BuildLayout(width, height);
+  const auto now = std::chrono::steady_clock::now();
+  const float frame_seconds =
+      s.last_update.time_since_epoch().count() == 0
+          ? 1.0f / 60.0f
+          : std::chrono::duration<float>(now - s.last_update).count();
+  s.last_update = now;
 
   // Every finger currently on the screen, from every touch device.
   std::unordered_map<uint64_t, ImVec2> touches;
@@ -278,6 +320,27 @@ bool UpdateAndDrawGamepadTouchOverlay(ImDrawList* draw, ImFont* font, float font
     const Control& control = s.controls[control_index];
     s.held[control_index] = true;
     if (control.kind != Kind::kStick) continue;
+    if (control.index == kRightStick && SwipeCamera()) {
+      // Swipe camera: the stick follows the finger's speed, so the view turns
+      // while the finger moves and stops when it stops. Full speed when the
+      // finger crosses about 1.5 screen heights per second (sensitivity 1).
+      if (!s.swipe_tracking) {
+        s.swipe_last = position;
+        s.swipe_tracking = true;
+      }
+      const float dt = std::clamp(frame_seconds, 1.0f / 240.0f, 0.1f);
+      const float sensitivity = float(std::clamp(REXCVAR_GET(gta4_touch_swipe_sensitivity), 0.1, 5.0));
+      const float full_speed = height * 1.5f / sensitivity;
+      const float target_x = std::clamp((position.x - s.swipe_last.x) / dt / full_speed, -1.0f, 1.0f);
+      const float target_y = std::clamp((position.y - s.swipe_last.y) / dt / full_speed, -1.0f, 1.0f);
+      // Light smoothing: touch samples arrive unevenly between frames.
+      s.stick_x[kRightStick] += (target_x - s.stick_x[kRightStick]) * 0.6f;
+      s.stick_y[kRightStick] += (target_y - s.stick_y[kRightStick]) * 0.6f;
+      s.swipe_last = position;
+      s.swipe_active = true;
+      stick_owned[kRightStick] = true;
+      continue;
+    }
     const ImVec2 origin = s.stick_origin[control.index];
     float x = (position.x - origin.x) / (control.r * 0.85f);
     float y = (position.y - origin.y) / (control.r * 0.85f);
@@ -293,6 +356,7 @@ bool UpdateAndDrawGamepadTouchOverlay(ImDrawList* draw, ImFont* font, float font
   for (int i = 0; i < 2; ++i) {
     if (!stick_owned[i]) s.stick_x[i] = s.stick_y[i] = 0.0f;
   }
+  if (!stick_owned[kRightStick]) s.swipe_tracking = s.swipe_active = false;
 
   if (draw && font && font_size > 0.0f) Draw(draw, font, font_size, s);
   return true;
@@ -328,7 +392,23 @@ bool ReadGamepadTouchOverlay(uint32_t user, rex::input::X_INPUT_GAMEPAD* output)
   };
   int16_t lx = 0, ly = 0, rx = 0, ry = 0;
   stick(0, &lx, &ly);
-  stick(1, &rx, &ry);
+  if (s.swipe_active) {
+    // Swipe camera: no dead zone of our own, and small movements start just
+    // past the game's own right-stick dead zone (about 27%, as on XInput) so
+    // slow, fine aiming swipes still turn the camera.
+    constexpr float kGameDeadZone = 0.27f;
+    const float x = s.stick_x[1], y = s.stick_y[1];
+    const float length = std::hypot(x, y);
+    // Leftovers of the smoothing after the finger stops are dropped, or the
+    // dead-zone offset would keep the camera creeping for a few frames.
+    if (length > 0.04f) {
+      const float scaled = std::min(kGameDeadZone + (1.0f - kGameDeadZone) * length, 1.0f) / length;
+      rx = int16_t(std::clamp(x * scaled, -1.0f, 1.0f) * 32767.0f);
+      ry = int16_t(std::clamp(-y * scaled, -1.0f, 1.0f) * 32767.0f);
+    }
+  } else {
+    stick(1, &rx, &ry);
+  }
   *output = {};
   output->buttons = buttons;
   output->left_trigger = triggers[0];

@@ -755,6 +755,7 @@ CMakeUserPresets.json
 /.github/workflows/*
 !/.github/workflows/repository-checks.yml
 !/.github/workflows/build-macos.yml
+!/.github/workflows/build-android-apk.yml
 
 # Reproducible touch regression runner and arithmetic fixtures.
 !/glue/rexglue-sdk-main/tools/verify_controls_regressions.py

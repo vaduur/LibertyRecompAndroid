@@ -1,0 +1,150 @@
+name: Android APK
+
+# Builds the Android APK on a Windows runner, the platform the Android scripts
+# in os/android/scripts were written and tested on (Git Bash + the NDK).
+# Download the result from the run's "Artifacts" section.
+#
+# Starts by itself on a push to the mali-dimensity-8400 branch (except pushes that
+# only change documentation), or by hand from the Actions tab. The native build is very large: the first run takes hours,
+# and later runs are faster because the build folder is cached.
+
+on:
+  push:
+    branches: [mali-dimensity-8400]
+    # Changes that cannot affect the APK do not start a build: documentation,
+    # images for the README, and the other workflows.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/build-macos.yml'
+      - '.github/workflows/repository-checks.yml'
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: 'GPU family the APK defaults to'
+        type: choice
+        options: [mali, adreno]
+        default: mali
+      cpu:
+        description: 'CPU target: compatible = all phones; armv9 = Dimensity 8400 and newer only (faster, crashes on older phones)'
+        type: choice
+        options: [compatible, armv9]
+        default: compatible
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: APK (${{ inputs.gpu || 'mali' }}, ${{ inputs.cpu || 'compatible' }})
+    runs-on: windows-2022
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      LIBERTY_GPU: ${{ inputs.gpu || 'mali' }}
+      LIBERTY_CPU: ${{ inputs.cpu || 'compatible' }}
+      NDK_VER: 29.0.14206865
+      STRIP: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Allow long paths
+        run: git config --system core.longpaths true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install CMake and Ninja
+        run: python -m pip install 'cmake>=3.29,<5' ninja
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK platform and NDK r29
+        run: |
+          SDKMANAGER="$(cygpath -u "$ANDROID_HOME")/cmdline-tools/latest/bin/sdkmanager.bat"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "ndk;$NDK_VER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/build
+            out/host-tools
+          key: android-${{ env.LIBERTY_GPU }}-${{ env.LIBERTY_CPU }}-${{ github.sha }}
+          restore-keys: |
+            android-${{ env.LIBERTY_GPU }}-${{ env.LIBERTY_CPU }}-
+            android-${{ env.LIBERTY_GPU }}-
+
+      - name: Fetch pinned dependencies and apply patches
+        run: python tools/setup_repo.py
+
+      - name: Build the Vulkan driver proxy
+        run: |
+          export ANDROID_HOME="$(cygpath -u "$ANDROID_HOME")"
+          export JAVA_HOME="$(cygpath -u "$JAVA_HOME")"
+          bash os/android/scripts/build_driver_proxy.sh
+
+      # The slow step. Its own timeout leaves time for the cache save below,
+      # so a build that runs out of time keeps its progress for the next run.
+      - name: Build the native libraries
+        timeout-minutes: 320
+        run: |
+          export ANDROID_HOME="$(cygpath -u "$ANDROID_HOME")"
+          export JAVA_HOME="$(cygpath -u "$JAVA_HOME")"
+          bash os/android/scripts/build_native.sh
+
+      - name: Save build cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/build
+            out/host-tools
+          key: android-${{ env.LIBERTY_GPU }}-${{ env.LIBERTY_CPU }}-${{ github.sha }}
+
+      - name: Package the APK
+        run: |
+          export ANDROID_HOME="$(cygpath -u "$ANDROID_HOME")"
+          export JAVA_HOME="$(cygpath -u "$JAVA_HOME")"
+          rm -f os/android/app/build/outputs/apk/debug/app-debug.apk
+          bash os/android/scripts/build_apk.sh debug
+
+      - name: Name the APK
+        run: |
+          VERSION="$(grep -o 'versionName *= *"[^"]*"' os/android/app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          [ "$LIBERTY_GPU" = "mali" ] && VERSION="$VERSION-mali"
+          SUFFIX="$(grep -o 'versionSuffix *= *"[^"]*"' os/android/app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          VERSION="$VERSION$SUFFIX"
+          [ "$LIBERTY_CPU" = "armv9" ] && VERSION="$VERSION-armv9"
+          cp os/android/app/build/outputs/apk/debug/app-debug.apk "LibertyRecompAndroid-$VERSION.apk"
+          echo "APK_NAME=LibertyRecompAndroid-$VERSION.apk" >> "$GITHUB_ENV"
+          ls -la LibertyRecompAndroid-*.apk
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_NAME }}
+          path: ${{ env.APK_NAME }}
+          if-no-files-found: error
+          retention-days: 30

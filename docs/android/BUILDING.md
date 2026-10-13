@@ -41,6 +41,8 @@ STRIP=1 bash os/android/scripts/build_native.sh
 # 4. Package the APK (debug-signed)
 rm -f os/android/app/build/outputs/apk/debug/app-debug.apk
 bash os/android/scripts/build_apk.sh
+#    For a Mali GPU (Dimensity, Exynos, Tensor) use the Mali variant instead,
+#    see MALI.md:  LIBERTY_GPU=mali bash os/android/scripts/build_apk.sh
 
 # 5. Install on the connected device and start the game
 #    (through the launcher with "--ez play true", which presses Play at once)

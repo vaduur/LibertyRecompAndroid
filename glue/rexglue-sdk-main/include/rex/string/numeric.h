@@ -10,7 +10,10 @@
 
 #pragma once
 
+#include <cerrno>
 #include <charconv>
+#include <cstdlib>
+#include <version>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -23,6 +26,35 @@
 #include <rex/vec128.h>
 
 namespace rex::string {
+
+// Floating-point std::from_chars is missing from the Android NDK's libc++.
+// Use it where the library provides it, otherwise fall back to strtof/strtod.
+template <typename T>
+inline std::from_chars_result from_chars_float(const char* first, const char* last, T& value) {
+#if defined(__cpp_lib_to_chars) && !defined(__ANDROID__)
+  return std::from_chars(first, last, value, std::chars_format::general);
+#else
+  std::string buffer(first, last);  // strtod needs a null-terminated string
+  const char* begin = buffer.c_str();
+  char* end = nullptr;
+  errno = 0;
+  T parsed;
+  if constexpr (sizeof(T) == sizeof(float)) {
+    parsed = std::strtof(begin, &end);
+  } else {
+    parsed = static_cast<T>(std::strtod(begin, &end));
+  }
+  if (end == begin) {
+    return {first, std::errc::invalid_argument};
+  }
+  const char* ptr = first + (end - begin);
+  if (errno == ERANGE) {
+    return {ptr, std::errc::result_out_of_range};
+  }
+  value = parsed;
+  return {ptr, std::errc()};
+#endif
+}
 
 inline std::string to_hex_string(uint32_t value) {
   return fmt::format("{:08X}", value);
@@ -133,8 +165,7 @@ inline T fpfs(const std::string_view value, bool force_hex) {
     }
     std::memcpy(&result, &pun, sizeof(PUN));
   } else {
-    auto [p, error] = std::from_chars(range.data(), range.data() + range.size(), result,
-                                      std::chars_format::general);
+    auto [p, error] = rex::string::from_chars_float(range.data(), range.data() + range.size(), result);
     // TODO(gibbed): do something more with errors?
     if (error != std::errc()) {
       assert_always();
@@ -253,7 +284,7 @@ inline vec128_t from_string<vec128_t>(const std::string_view value, bool force_h
         assert_always();
         return vec128_t();
       }
-      auto result = std::from_chars(p, end, v.f32[i], std::chars_format::general);
+      auto result = rex::string::from_chars_float(p, end, v.f32[i]);
       if (result.ec != std::errc()) {
         assert_always();
         return vec128_t();

@@ -55,13 +55,15 @@ public class LibertyActivity extends SDLActivity {
     private static final String RESOURCES = "Resources";
     private static final String RESOURCES_STAMP = ".stamp";
     private static final String DEFAULT_ARGS = "default_args.txt";
+    static final String OVERLAY_FILE = "overlay.txt";
+    static final String GRAPHICS_FILE = "graphics.txt";
 
     private String[] mArguments = new String[0];
     /** "--android_surface=WxH" in args.txt: fixed swapchain size, scaled to the panel by the display hardware. */
     private static final String SURFACE_ARGUMENT = "--android_surface=";
     private int mSurfaceWidth;
     private int mSurfaceHeight;
-    private String mDriverMode = DriverBridge.TURNIP;
+    private String mDriverMode = DriverBridge.defaultMode();
     /** driver.txt as found, for the launch report. */
     private String mDriverText;
     private File mDataRoot;
@@ -100,7 +102,9 @@ public class LibertyActivity extends SDLActivity {
         writeLaunchReport(status, reason);
         if (reason != null) {
             throw new UnsatisfiedLinkError(reason
-                    + "\n\nSupported GPUs: Qualcomm Adreno 6xx and 7xx."
+                    + (DriverBridge.isMaliBuild()
+                            ? "\n\nThis is the Mali build: it needs a GPU driver with Vulkan 1.2 or newer."
+                            : "\n\nSupported GPUs: Qualcomm Adreno 6xx and 7xx.")
                     + "\nA report was saved to Android/data/" + getPackageName()
                     + "/files/" + LAUNCH_REPORT + ".");
         }
@@ -141,6 +145,8 @@ public class LibertyActivity extends SDLActivity {
         String kgsl = readFirstLine(new File("/sys/class/kgsl/kgsl-3d0/gpu_model"));
         report.append("kgsl gpu: ").append(kgsl != null ? kgsl : "(not readable or not Adreno)")
                 .append('\n');
+        report.append("build: ").append(BuildConfig.GPU_FAMILY)
+                .append(" (default driver ").append(DriverBridge.defaultMode()).append(")\n");
         report.append("driver.txt: ")
                 .append(mDriverText == null ? "(none)" : "\"" + mDriverText + "\"")
                 .append(" -> ").append(mDriverMode).append('\n');
@@ -238,8 +244,11 @@ public class LibertyActivity extends SDLActivity {
         setenv("REX_RESOURCES_DIR", resources.getAbsolutePath());
         // Turnip's GMEM (tiled) mode loses ~15% on this renderer's many small
         // passes and resolves; direct system-memory rendering is faster on the
-        // Adreno 650. env.txt may override it.
-        setenv("TU_DEBUG", "sysmem");
+        // Adreno 650. TU_DEBUG means nothing to any other driver, so the Mali
+        // build leaves it unset. env.txt may override it either way.
+        if (!DriverBridge.isMaliBuild()) {
+            setenv("TU_DEBUG", "sysmem");
+        }
         applyEnvironmentFile(new File(dataRoot, "env.txt"));
         File argsFile = new File(dataRoot, "args.txt");
         if (!argsFile.isFile()) {
@@ -253,6 +262,12 @@ public class LibertyActivity extends SDLActivity {
         }
         migrateArguments(argsFile);
         List<String> arguments = new ArrayList<>(Arrays.asList(readArguments(argsFile)));
+        // Performance overlay lines chosen on the launcher (written by
+        // LauncherActivity); later arguments win, so these override args.txt.
+        // Graphics settings chosen on the launcher; like the overlay lines they
+        // come after args.txt and so override it.
+        arguments.addAll(Arrays.asList(readArguments(new File(dataRoot, GRAPHICS_FILE))));
+        arguments.addAll(Arrays.asList(readArguments(new File(dataRoot, OVERLAY_FILE))));
         // The runtime's own log (warnings and errors at the default level) goes
         // to logcat and Liberty Recompiled/logs, and ends up in crash reports.
         // Both switches together: categories without --diagnostics=true make
@@ -290,7 +305,7 @@ public class LibertyActivity extends SDLActivity {
                 Log.w(TAG, "bad " + argument);
             }
         }
-        mArguments = arguments.toArray(new String[0]);
+        mArguments = withoutDuplicateOptions(arguments).toArray(new String[0]);
         String driver = readFirstLine(new File(dataRoot, "driver.txt"));
         mDriverText = driver;
         String lower = driver == null ? "" : driver.toLowerCase(Locale.ROOT);
@@ -299,8 +314,11 @@ public class LibertyActivity extends SDLActivity {
                     + driver.substring(DriverBridge.CUSTOM_PREFIX.length()).trim();
         } else if (lower.equals(DriverBridge.SYSTEM)) {
             mDriverMode = DriverBridge.SYSTEM;
-        } else if (!lower.isEmpty() && !lower.equals(DriverBridge.TURNIP)) {
-            Log.w(TAG, "unknown driver.txt value \"" + driver + "\", using Turnip");
+        } else if (lower.equals(DriverBridge.TURNIP)) {
+            mDriverMode = DriverBridge.TURNIP;
+        } else if (!lower.isEmpty()) {
+            Log.w(TAG, "unknown driver.txt value \"" + driver + "\", using "
+                    + DriverBridge.defaultMode());
         }
         Log.i(TAG, "data=" + dataRoot + " resources=" + resources
                 + " args=" + mArguments.length + " driver=" + mDriverMode);
@@ -502,6 +520,42 @@ public class LibertyActivity extends SDLActivity {
     }
 
     /** One argument per line; blank lines and lines starting with '#' are skipped. */
+
+    /**
+     * The runtime's command-line parser (CLI11) rejects an option given twice,
+     * and on that error it ignores the whole command line. graphics.txt and
+     * overlay.txt repeat options that args.txt already sets, so keep only the
+     * last occurrence of each option: launcher choices override args.txt.
+     * "--no-name" counts as the same option as "--name".
+     */
+    static List<String> withoutDuplicateOptions(List<String> arguments) {
+        java.util.Map<String, Integer> lastIndex = new java.util.HashMap<>();
+        for (int i = 0; i < arguments.size(); ++i) {
+            String key = optionKey(arguments.get(i));
+            if (key != null) lastIndex.put(key, i);
+        }
+        List<String> result = new ArrayList<>(arguments.size());
+        for (int i = 0; i < arguments.size(); ++i) {
+            String argument = arguments.get(i);
+            String key = optionKey(argument);
+            if (key == null || lastIndex.get(key) == i) {
+                result.add(argument);
+            } else {
+                Log.i(TAG, "dropping overridden argument " + argument);
+            }
+        }
+        return result;
+    }
+
+    private static String optionKey(String argument) {
+        if (argument == null || !argument.startsWith("--")) return null;
+        String name = argument.substring(2);
+        int equals = name.indexOf('=');
+        if (equals >= 0) name = name.substring(0, equals);
+        if (name.startsWith("no-")) name = name.substring(3);
+        return name.trim().toLowerCase(Locale.ROOT);
+    }
+
     private static String[] readArguments(File file) {
         List<String> arguments = new ArrayList<>();
         if (file.isFile()) {
