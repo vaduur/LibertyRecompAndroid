@@ -11,6 +11,7 @@
 #include "native_gpu_counters.h"
 #include "native_spirv_descriptor_remap.h"
 #include "native_spirv_loop_watchdog.h"
+#include "native_spirv_clip_distance.h"
 #include "native_spirv_legacy_mul.h"
 #include "native_vertex_cache.h"
 #include "native_spirv_relaxed.h"
@@ -5774,8 +5775,16 @@ Gta4NativeGraphicsSystem::CaptureTextureResourceUncached(
 
   const FormatInfo* guest_format_info = info.format_info();
   const xenos::TextureFormat base_format = GetBaseFormat(info.format);
+  // Without BC sampling support (Mali) BC1/BC2/BC3/DXT3A blocks are decoded
+  // to RGBA8 pixels below, so the host side is plain RGBA8.
+  const bool bc_to_rgba = !NativeBCCompressionSupported() &&
+                          (base_format == xenos::TextureFormat::k_DXT1 ||
+                           base_format == xenos::TextureFormat::k_DXT2_3 ||
+                           base_format == xenos::TextureFormat::k_DXT4_5 ||
+                           base_format == xenos::TextureFormat::k_DXT3A);
   const FormatInfo* host_format_info =
-      base_format == xenos::TextureFormat::k_DXT3A
+      bc_to_rgba ? FormatInfo::Get(uint32_t(xenos::TextureFormat::k_8_8_8_8))
+      : base_format == xenos::TextureFormat::k_DXT3A
           ? FormatInfo::Get(uint32_t(xenos::TextureFormat::k_DXT2_3))
       : base_format == xenos::TextureFormat::k_CTX1 || base_format == xenos::TextureFormat::k_DXN
           ? FormatInfo::Get(uint32_t(xenos::TextureFormat::k_8_8))
@@ -5827,7 +5836,7 @@ Gta4NativeGraphicsSystem::CaptureTextureResourceUncached(
     const TextureExtent guest_extent = info.GetMipExtent(mip, true);
     const bool convert_block_to_pixels = base_format == xenos::TextureFormat::k_CTX1 ||
                                          base_format == xenos::TextureFormat::k_DXN ||
-                                         base_format == xenos::TextureFormat::k_DXT5A;
+                                         base_format == xenos::TextureFormat::k_DXT5A || bc_to_rgba;
     const uint32_t host_storage_width =
         convert_block_to_pixels ? guest_extent.block_width * guest_format_info->block_width
                                 : mip_width;
@@ -5983,6 +5992,22 @@ Gta4NativeGraphicsSystem::CaptureTextureResourceUncached(
                 texture_conversion::ConvertTexelDXNToR8G8(info.endianness,
                                                           destination + destination_offset,
                                                           source_block, destination_pitch);
+              } else if (bc_to_rgba && base_format == xenos::TextureFormat::k_DXT1) {
+                texture_conversion::ConvertTexelBC1ToRGBA8(info.endianness,
+                                                           destination + destination_offset,
+                                                           source_block, destination_pitch);
+              } else if (bc_to_rgba && base_format == xenos::TextureFormat::k_DXT2_3) {
+                texture_conversion::ConvertTexelBC2ToRGBA8(info.endianness,
+                                                           destination + destination_offset,
+                                                           source_block, destination_pitch);
+              } else if (bc_to_rgba && base_format == xenos::TextureFormat::k_DXT4_5) {
+                texture_conversion::ConvertTexelBC3ToRGBA8(info.endianness,
+                                                           destination + destination_offset,
+                                                           source_block, destination_pitch);
+              } else if (bc_to_rgba && base_format == xenos::TextureFormat::k_DXT3A) {
+                texture_conversion::ConvertTexelDXT3AToRGBA8(info.endianness,
+                                                             destination + destination_offset,
+                                                             source_block, destination_pitch);
               } else {
                 texture_conversion::ConvertTexelDXT5AToR8(info.endianness,
                                                           destination + destination_offset,
@@ -8422,6 +8447,21 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
           !REXCVAR_GET(gta4_native_fs_relaxed_precision)) return;
       if (auto relaxed = MarkSpirvArithmeticRelaxed(spirv)) spirv = std::move(relaxed->words);
     };
+    // Devices without shaderClipDistance/shaderCullDistance (Mali) cannot
+    // enable those features, yet the offline stock cache declares the
+    // built-ins statically. The ARM driver segfaults building such a
+    // pipeline instead of failing, so rewrite them into plain outputs here.
+    // Draws that really use clip planes stay rejected at draw time.
+    const auto apply_clip_strip = [&](std::vector<uint32_t>& spirv, const char* what) {
+      if (spirv.empty()) return;
+      const bool strip_clip = !vulkan_device->properties().shaderClipDistance;
+      const bool strip_cull = !vulkan_device->properties().shaderCullDistance;
+      if (auto stripped = StripSpirvClipCullDistance(spirv, strip_clip, strip_cull)) {
+        spirv = std::move(stripped->words);
+        REXLOG_INFO("gta4-native: stripped clip/cull built-ins from {} shader {} ({} decorations)",
+                    what, cache_entry->filename, stripped->stripped_decorations);
+      }
+    };
     uint32_t watchdog_loops = 0;
     const auto apply_loop_watchdog = [&](std::vector<uint32_t>& spirv) {
       if (!REXCVAR_GET(gta4_native_loop_watchdog) || spirv.empty()) return;
@@ -8494,11 +8534,36 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     }
     apply_ubo_constants(stock_early_spirv);
     apply_relaxed(stock_early_spirv);
+    apply_clip_strip(stock_early_spirv, "stock early");
     stock_early_spirv_size = stock_early_spirv.size() * sizeof(uint32_t);
     if (!stock_late_spirv.empty()) {
       apply_ubo_constants(stock_late_spirv);
       apply_relaxed(stock_late_spirv);
+      apply_clip_strip(stock_late_spirv, "stock late");
       stock_late_spirv_size = stock_late_spirv.size() * sizeof(uint32_t);
+    }
+    if (REXCVAR_GET(gta4_native_dump_shaders)) {
+      // Post-transform SPIR-V: exactly what the driver receives. Later
+      // compilations of the same hash overwrite. Used for Mali bring-up
+      // (driver segfaults in vkCreateGraphicsPipelines with no report).
+      const auto directory = rex::filesystem::GetUserFolder() / "spv";
+      std::error_code error;
+      std::filesystem::create_directories(directory, error);
+      const char* stage_suffix = command.stage == ShaderStage::kVertex ? "vs" : "ps";
+      const auto early_path = directory / fmt::format("{:016X}_{}_final.spv", command.hash,
+                                                      stage_suffix);
+      if (FILE* file = std::fopen(early_path.string().c_str(), "wb")) {
+        std::fwrite(stock_early_spirv.data(), sizeof(uint32_t), stock_early_spirv.size(), file);
+        std::fclose(file);
+      }
+      if (!stock_late_spirv.empty()) {
+        const auto late_path =
+            directory / fmt::format("{:016X}_{}_late_final.spv", command.hash, stage_suffix);
+        if (FILE* file = std::fopen(late_path.string().c_str(), "wb")) {
+          std::fwrite(stock_late_spirv.data(), sizeof(uint32_t), stock_late_spirv.size(), file);
+          std::fclose(file);
+        }
+      }
     }
     VkShaderModule stock_early_module = ui::vulkan::util::CreateShaderModule(
         vulkan_device, stock_early_spirv.data(), stock_early_spirv_size);
@@ -8703,6 +8768,8 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
         apply_ubo_constants(override_late_spirv);
         apply_relaxed(override_early_spirv);
         apply_relaxed(override_late_spirv);
+        apply_clip_strip(override_early_spirv, "override early");
+        apply_clip_strip(override_late_spirv, "override late");
         const size_t effective_early_size = override_early_spirv.size() * sizeof(uint32_t);
         const size_t effective_late_size = override_late_spirv.size() * sizeof(uint32_t);
         VkShaderModule override_early_module = ui::vulkan::util::CreateShaderModule(
@@ -18469,7 +18536,7 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
     return existing->second.get();
   }
   protected_texture_generations_.insert(texture->generation);
-  const VkFormat format = ConvertTextureFormat(texture->info.format);
+  const VkFormat format = NativeHostTextureFormat(texture->info.format);
   if (format == VK_FORMAT_UNDEFINED) {
     return reject("format");
   }
@@ -18867,6 +18934,38 @@ Gta4NativeGraphicsSystem::NativeTextureImage* Gta4NativeGraphicsSystem::GetOrCre
   return result;
 }
 
+bool Gta4NativeGraphicsSystem::NativeBCCompressionSupported() {
+  std::call_once(native_bc_support_query_, [this] {
+    // BC1/BC2/BC3 sampling needs textureCompressionBC (absent on Mali).
+    // Probe BC3 directly for the two usages the texture path requires.
+    const VkFormatProperties properties =
+        GetNativeFormatProperties(VK_FORMAT_BC3_UNORM_BLOCK);
+    constexpr VkFormatFeatureFlags kNeeded =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    native_bc_compression_supported_ =
+        (properties.optimalTilingFeatures & kNeeded) == kNeeded;
+    REXLOG_INFO("gta4-native: BC texture compression supported={}",
+                native_bc_compression_supported_);
+  });
+  return native_bc_compression_supported_;
+}
+
+VkFormat Gta4NativeGraphicsSystem::NativeHostTextureFormat(xenos::TextureFormat format) {
+  const VkFormat converted = ConvertTextureFormat(format);
+  if (!NativeBCCompressionSupported()) {
+    switch (GetBaseFormat(format)) {
+      case xenos::TextureFormat::k_DXT1:
+      case xenos::TextureFormat::k_DXT2_3:
+      case xenos::TextureFormat::k_DXT4_5:
+      case xenos::TextureFormat::k_DXT3A:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+      default:
+        break;
+    }
+  }
+  return converted;
+}
+
 VkFormatProperties Gta4NativeGraphicsSystem::GetNativeFormatProperties(VkFormat format) {
   if (const auto found = native_format_properties_.find(format); found != native_format_properties_.end())
     return found->second;
@@ -18940,7 +19039,7 @@ Gta4NativeGraphicsSystem::NativeSampler* Gta4NativeGraphicsSystem::GetOrCreateSa
     key.mip_max_level = key.mip_min_level;
   }
 
-  const VkFormat sampled_format = image ? image->format : ConvertTextureFormat(fetch.format);
+  const VkFormat sampled_format = image ? image->format : NativeHostTextureFormat(fetch.format);
   if (sampled_format == VK_FORMAT_UNDEFINED) {
     return nullptr;
   }
@@ -19932,14 +20031,33 @@ bool Gta4NativeGraphicsSystem::PrepareFrameTextures(VkCommandBuffer command_buff
       }
       if (NativeBindingFailed(realization)) {
         command.failed_texture_mask |= stage_bit;
+        const auto& failed_texture_ptr = command.textures[stage];
+        // Non-creating lookup: did the frame map get an image, and does it
+        // have a view? (Re-calling prepared_image here would create one and
+        // lie about the original failure.)
+        const NativeTextureImage* failed_image = nullptr;
+        if (failed_texture_ptr) {
+          if (auto* cached = prepared_texture_images_.Find(failed_texture_ptr->generation)) {
+            failed_image = *cached;
+          }
+        }
         REXLOG_ERROR(
             "gta4-native-cause: point=required-binding-failed frame={} cmd={} stage={} "
             "status={} handle={:08X} generation={} requested-mask={:08X} "
-            "image-mask={:08X} sampler-mask={:08X}",
+            "image-mask={:08X} sampler-mask={:08X} "
+            "tex-null={} gpu-produced={} payload={} format={} dimension={} size={}x{} "
+            "image-null={} view-null={}",
             submitted_frame, command_index, stage, NativeBindingRealizationName(realization),
             command.pipeline_state ? command.pipeline_state->textures[stage] : 0,
             command.textures[stage] ? command.textures[stage]->generation : 0,
-            command.used_texture_mask, command.realized_image_mask, command.realized_sampler_mask);
+            command.used_texture_mask, command.realized_image_mask, command.realized_sampler_mask,
+            failed_texture_ptr == nullptr, failed_texture_ptr && failed_texture_ptr->gpu_produced,
+            failed_texture_ptr ? failed_texture_ptr->payload.size() : 0,
+            failed_texture_ptr ? uint32_t(failed_texture_ptr->info.format) : 0,
+            failed_texture_ptr ? uint32_t(failed_texture_ptr->info.dimension) : 0,
+            failed_texture_ptr ? failed_texture_ptr->info.width + 1 : 0,
+            failed_texture_ptr ? failed_texture_ptr->info.height + 1 : 0, failed_image == nullptr,
+            failed_image && failed_image->resource.view == VK_NULL_HANDLE);
         continue;
       }
       if (native_descriptor_backend_ == NativeDescriptorBackend::kIndexed && !native_descriptor_paging_) {

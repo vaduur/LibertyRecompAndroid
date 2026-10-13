@@ -1760,6 +1760,11 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool EnsureCachedDescriptorCapacity(uint32_t frame_copy, uint32_t additional_entries);
   void InvalidateCachedDescriptors(uint64_t image_lifetime);
   VkFormatProperties GetNativeFormatProperties(VkFormat format);
+  // BC1/BC2/BC3 need textureCompressionBC; without it (Mali) they are
+  // decompressed to RGBA8 on upload. False until the first query runs.
+  bool NativeBCCompressionSupported();
+  // Host VkFormat for a guest texture, accounting for BC decompression.
+  VkFormat NativeHostTextureFormat(xenos::TextureFormat format);
   bool PrepareFrameTextures(VkCommandBuffer command_buffer, bool prepare_present,
                             uint32_t submitted_frame, bool trace_reflections);
   NativeSampler* GetOrCreateSampler(const xenos::xe_gpu_texture_fetch_t& fetch,
@@ -2840,6 +2845,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   uint32_t native_descriptor_capacity_ = 0;
   uint32_t native_sampler_descriptor_capacity_ = 0;
   bool null_images_initialized_ = false;
+  // Whether the device can sample BC1/BC2/BC3 textures natively (desktop).
+  // Mali has no BC support, so those are decompressed to RGBA8 on upload.
+  // Queried once from the physical device; vkGetPhysicalDeviceFeatures is
+  // safe to call from the texture worker thread.
+  std::once_flag native_bc_support_query_;
+  bool native_bc_compression_supported_ = true;
 };
 
 }  // namespace rex::graphics::gta4_native

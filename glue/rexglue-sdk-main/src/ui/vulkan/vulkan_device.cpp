@@ -56,6 +56,15 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_MAC, "UI/V
                     "Require fillModeNonSolid support for Vulkan GPU emulation (disable to "
                     "allow fallback to solid fill for line/point polygon modes)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// Mali (ARM proprietary) exposes no clip/cull distances. The native GTA IV
+// backend already degrades per draw (pipeline_cache fallback disables user
+// clip planes, graphics_system rejects clip-plane draws), so rejecting the
+// whole device here bricks Mali for no reason. Default off so Mali-G720 and
+// friends can be selected; set true to restore the old strict veto.
+REXCVAR_DEFINE_BOOL(vulkan_require_shader_clip_distance, false, "UI/Vulkan",
+                    "Require shaderClipDistance support for native shaders (enable to "
+                    "reject devices without user clip-plane support outright)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace rex {
 namespace ui {
@@ -131,17 +140,32 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
         properties.deviceName);
     return nullptr;
   }
-  if (with_native_shader_support &&
-      (!supported_features.shaderClipDistance || !supported_features.sampleRateShading)) {
-    // These capabilities are declared statically by the cached title vertex
-    // shaders and the per-sample fullscreen conversion shaders, respectively.
-    // A draw-time flag cannot make either shader interface legal without them.
+  if (with_native_shader_support && !supported_features.sampleRateShading) {
+    // sampleRateShading is declared statically by the per-sample fullscreen
+    // conversion shaders. A draw-time flag cannot make that shader interface
+    // legal without it.
     REXLOG_WARN(
-        "Vulkan device '{}' lacks native shader capabilities: shaderClipDistance={}, "
-        "sampleRateShading={}",
-        properties.deviceName, supported_features.shaderClipDistance != VK_FALSE,
-        supported_features.sampleRateShading != VK_FALSE);
+        "Vulkan device '{}' lacks native shader capabilities: sampleRateShading=false",
+        properties.deviceName);
     return nullptr;
+  }
+  if (with_native_shader_support && !supported_features.shaderClipDistance &&
+      REXCVAR_GET(vulkan_require_shader_clip_distance)) {
+    // Cached title vertex shaders can declare ClipDistance statically. The
+    // native backend degrades per draw without it (user clip planes disabled
+    // in pipeline_cache, clip-plane draws rejected in graphics_system), so
+    // this veto is opt-in for Mali and other tile GPUs without the feature.
+    REXLOG_WARN(
+        "Vulkan device '{}' lacks shaderClipDistance, but "
+        "vulkan_require_shader_clip_distance=true",
+        properties.deviceName);
+    return nullptr;
+  }
+  if (with_native_shader_support && !supported_features.shaderClipDistance) {
+    REXLOG_WARN(
+        "Vulkan device '{}' has no shaderClipDistance; user clip-plane draws "
+        "will be skipped (Mali fallback)",
+        properties.deviceName);
   }
 
   if ((with_gpu_emulation || with_native_shader_support) &&

@@ -780,9 +780,9 @@ public class LauncherActivity extends Activity {
         mDrivers.removeAllViews();
         mDriverModes.clear();
         addDriver(DriverBridge.TURNIP, "Turnip 26.3.0-R6 (bundled)",
-                "Recommended for Adreno 6xx/7xx");
+                "Recommended for Adreno 6xx/7xx, does nothing on Mali");
         addDriver(DriverBridge.SYSTEM, "System driver",
-                "The device's own Vulkan driver (needs Vulkan 1.2)");
+                "The device's own Vulkan driver (needs Vulkan 1.2, use this on Mali)");
         File[] packages = customRoot().listFiles();
         if (packages != null) {
             Arrays.sort(packages);

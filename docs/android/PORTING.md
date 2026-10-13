@@ -270,5 +270,5 @@ because benchmarking was done at night, when shadows are not visible.
   resolves into existing passes, are the next steps.
 - **The skipped light-volume shader** should be fixed in the shader translation rather than
   skipped.
-- **Other GPUs.** Adreno 7xx and 8xx devices, and Mali through the system driver, have not been
-  tried.
+- **Other GPUs.** Adreno 7xx and 8xx devices have had only brief tries. Mali runs
+  through the system driver since the Mali support pass (Mali-G720 tested).

@@ -5,7 +5,9 @@
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 SECONDS_TOTAL="${1:-10}"
-LAYER=$(adbs shell dumpsys SurfaceFlinger --list | tr -d '\r' | grep -E "^SurfaceView\[$PKG/.*\(BLAST\)" | head -1)
+# Newer Android wraps the listing (RequestedLayerState{...}); extract the bare
+# "<id> SurfaceView[pkg/...](BLAST)#<n>" token the --latency query wants.
+LAYER=$(adbs shell dumpsys SurfaceFlinger --list | tr -d '\r' | grep -oE "[A-Za-z0-9]+ SurfaceView\[$PKG/[^ ]*\(BLAST\)#[0-9]+" | head -1 || true)
 [ -n "$LAYER" ] || { echo "game surface not found - is the game in the foreground?"; exit 1; }
 OUT="$(mktemp)"
 adbs shell "dumpsys SurfaceFlinger --latency-clear '$LAYER'" >/dev/null
@@ -13,7 +15,7 @@ for _ in $(seq "$SECONDS_TOTAL"); do
   sleep 1
   adbs shell "dumpsys SurfaceFlinger --latency '$LAYER'" | tr -d '\r' >> "$OUT"
 done
-python - "$(winpath "$OUT")" <<'EOF'
+"$PYTHON" - "$(npath "$OUT")" <<'EOF'
 import sys
 present = set()
 for line in open(sys.argv[1]):

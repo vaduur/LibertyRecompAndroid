@@ -116,7 +116,7 @@ public class LibertyActivity extends SDLActivity {
         writeLaunchReport(status, reason);
         if (reason != null) {
             throw new UnsatisfiedLinkError(reason
-                    + "\n\nSupported GPUs: Qualcomm Adreno 6xx and 7xx."
+                    + "\n\nSupported GPUs: Qualcomm Adreno 6xx/7xx, Mali-G720 and newer (system driver, experimental)."
                     + "\nA report was saved to Android/data/" + getPackageName()
                     + "/files/" + LAUNCH_REPORT + ".");
         }
@@ -259,8 +259,20 @@ public class LibertyActivity extends SDLActivity {
         setenv("REX_RESOURCES_DIR", resources.getAbsolutePath());
         // Turnip's GMEM (tiled) mode loses ~15% on this renderer's many small
         // passes and resolves; direct system-memory rendering is faster on the
-        // Adreno 650. env.txt may override it.
-        setenv("TU_DEBUG", "sysmem");
+        // Adreno 650. env.txt may override it. Only for Turnip/Adreno driver
+        // modes: on Mali (system driver) TU_DEBUG is meaningless and only
+        // confuses bug reports.
+        // mDriverMode is parsed from driver.txt below; peek it early so the
+        // default matches the driver that will actually load.
+        String earlyDriver = readFirstLine(new File(dataRoot, "driver.txt"));
+        String earlyLower = earlyDriver == null ? "" : earlyDriver.toLowerCase(Locale.ROOT);
+        boolean earlyTurnip = earlyLower.isEmpty() || earlyLower.equals(DriverBridge.TURNIP)
+                || earlyLower.startsWith(DriverBridge.CUSTOM_PREFIX);
+        if (earlyTurnip) {
+            setenv("TU_DEBUG", "sysmem");
+        } else {
+            Log.i(TAG, "system driver selected, leaving TU_DEBUG unset (Mali path)");
+        }
         applyEnvironmentFile(new File(dataRoot, "env.txt"));
         File argsFile = new File(dataRoot, "args.txt");
         if (!argsFile.isFile()) {

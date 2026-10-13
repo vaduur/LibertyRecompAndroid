@@ -238,9 +238,18 @@ if(REXGLUE_USE_VULKAN)
             endif()
         endif()
     elseif(CMAKE_HOST_UNIX AND GTA4_NATIVE_DXC_ARCH STREQUAL "x64")
-        set(GTA4_NATIVE_DXC "${GTA4_NATIVE_DXC_ROOT}/bin/x64/dxc-linux")
-        if(NOT GTA4_NATIVE_DXC_LIBRARY_PATH)
-            set(GTA4_NATIVE_DXC_LIBRARY_PATH "${GTA4_NATIVE_DXC_ROOT}/lib/x64")
+        if(GTA4_NATIVE_DXC_LIBRARY_PATH AND EXISTS "${GTA4_NATIVE_DXC_LIBRARY_PATH}/bin/dxc")
+            # A newer standalone DXC release tree (out/host-tools/dxc-linux on
+            # Android/Linux builds): bin/dxc plus lib/libdxcompiler.so. The
+            # bundled DXC 1.8 segfaults on GTA IV's Bink pixel shaders, same as
+            # on Windows/macOS (see setup_host_tools.sh).
+            set(GTA4_NATIVE_DXC "${GTA4_NATIVE_DXC_LIBRARY_PATH}/bin/dxc")
+            set(GTA4_NATIVE_DXC_LIBRARY_PATH "${GTA4_NATIVE_DXC_LIBRARY_PATH}/lib")
+        else()
+            set(GTA4_NATIVE_DXC "${GTA4_NATIVE_DXC_ROOT}/bin/x64/dxc-linux")
+            if(NOT GTA4_NATIVE_DXC_LIBRARY_PATH)
+                set(GTA4_NATIVE_DXC_LIBRARY_PATH "${GTA4_NATIVE_DXC_ROOT}/lib/x64")
+            endif()
         endif()
     endif()
 

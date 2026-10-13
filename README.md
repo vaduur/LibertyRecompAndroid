@@ -74,15 +74,24 @@ Known problems:
 
 **Not supported:**
 
-- **ARM Mali / Immortalis GPUs.** This covers most Exynos chips before the 2200, MediaTek
-  Dimensity/Helio and Google Tensor.
 - **Samsung Xclipse GPUs** (Exynos 2200 and newer).
-- **PowerVR GPUs** and anything else that is not an Adreno.
+- **PowerVR GPUs** and anything else that is not an Adreno or a recent Mali.
 
 Why only Adreno: the renderer needs Vulkan 1.2 and was tuned on Turnip. Turnip is Mesa's open-source
 Vulkan driver, and it exists only for Adreno GPUs. The stock Qualcomm driver on older devices
 (including the Adreno 650) exposes only Vulkan 1.1. On other GPUs the bundled driver cannot load,
 and nobody has run the renderer on their vendor drivers.
+
+**ARM Mali / Immortalis (experimental).** Since the Mali support pass, recent Mali GPUs
+(tested: Mali-G720 MC7 in a Dimensity 8400 / POCO X7 Pro) can run the game through the
+device's own Vulkan driver: choose **System driver** on the launcher. This covers most
+Exynos chips before the 2200, MediaTek Dimensity/Helio and Google Tensor with Vulkan 1.2+.
+Mali has no clip/cull distances and no BC texture compression, so the renderer disables
+user clip planes and decompresses DXT textures to RGBA8 on upload (slower loads, more
+memory). Expect ~30 FPS with drops in heavy scenes, missing light volumes from the
+skipped Turnip workaround shader, and rough edges in general. Use the Mali starting
+profile in `os/android/android_args/mali-g720.txt` (FSR performance, no AA).
+See [Mali notes](docs/android/MALI.md) for the technical details.
 
 **Adreno 8xx (Snapdragon 8 Elite and newer): experimental, since 0.5.7.5.** The game has been
 started on an Adreno 840 (Samsung, Android 17). The bundled Turnip build does not support Adreno
@@ -181,6 +190,7 @@ The full walkthrough, including the `install/` folder and older versions, is in
 | [Installation and first launch](docs/android/INSTALL.md) | Installing the APK, copying the game files, the first-run installer, upgrading |
 | [Advanced configuration](docs/android/ADVANCED.md) | `args.txt` settings, live tuning, driver selection, logs, performance presets |
 | [What was done for Android](docs/android/PORTING.md) | Technical write-up of the port: build, platform layer, driver, renderer and stability work |
+| [Running on ARM Mali](docs/android/MALI.md) | Experimental Mali support: what was needed and known gaps |
 | [Building from source](docs/android/BUILDING.md) | Building the APK yourself |
 | [Upstream README](README_UPSTREAM.md) | The original Liberty Recompiled README (desktop builds, mods, online) |
 
