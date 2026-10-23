@@ -10,6 +10,7 @@
 #include "native_pipeline_stats.h"
 #include "native_gpu_counters.h"
 #include "native_spirv_descriptor_remap.h"
+#include "native_spirv_location_remap.h"
 #include "native_spirv_loop_watchdog.h"
 #include "native_spirv_legacy_mul.h"
 #include "native_vertex_cache.h"
@@ -334,6 +335,10 @@ REXCVAR_DEFINE_DOUBLE(gta4_native_depth_bias_slope_scale, 1.0, "GTA IV/Graphics/
 REXCVAR_DEFINE_UINT32(gta4_native_debug_force_depth_clamp, 0, "GTA IV/Graphics/Native Renderer",
                       "Diagnostics: force depth clamp on draws without color targets (1) or all draws (2)")
     .range(0, 2);
+REXCVAR_DEFINE_BOOL(gta4_native_force_vertex_location_compaction, false,
+                    "GTA IV/Graphics/Native Renderer",
+                    "Diagnostics: compact the vertex shader input locations even when the device "
+                    "can address them where they are");
 REXCVAR_DEFINE_UINT32(gta4_fps_guard, 3, "GTA IV/Performance",
                       "30 FPS guard: highest content reduction step it may take when frames miss "
                       "the 30 Hz budget (0 = off; 1-3 = environment reflection every other "
@@ -8097,6 +8102,7 @@ bool Gta4NativeGraphicsSystem::InitializeShaderCache() {
 }
 
 bool Gta4NativeGraphicsSystem::ReflectVertexInputs(const std::vector<uint32_t>& spirv,
+                                                   const std::vector<uint32_t>& vertex_input_locations,
                                                    std::vector<NativeVertexInput>& inputs) {
   inputs.clear();
   if (spirv.size() < 5 || spirv[0] != kSpirvMagic || !spirv[3]) {
@@ -8220,7 +8226,13 @@ bool Gta4NativeGraphicsSystem::ReflectVertexInputs(const std::vector<uint32_t>& 
     if (!component_count || component_count > 4) {
       return false;
     }
-    inputs.push_back({locations[variable.id], numeric_type, component_count});
+    // The module carries compacted slots; the semantic's own location is what
+    // a vertex declaration is matched against, so recover it from the map the
+    // compaction produced. Without compaction the two are the same.
+    const uint32_t compact = locations[variable.id];
+    const uint32_t location =
+        compact < vertex_input_locations.size() ? vertex_input_locations[compact] : compact;
+    inputs.push_back({location, compact, numeric_type, component_count});
   }
 
   std::sort(inputs.begin(), inputs.end(),
@@ -8553,6 +8565,16 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     apply_legacy_mul(stock_late_spirv);
     RemapSpirvDrawDescriptorSets(stock_early_spirv);
     RemapSpirvDrawDescriptorSets(stock_late_spirv);
+    // Compact the vertex input locations only where the device cannot address
+    // them where the guest's semantics put them: the Vulkan minimum of 16
+    // vertex attributes, which is what PowerVR and Mali report, leaves the
+    // table's COLOR0 at location 17 and every pipeline over the limit.
+    std::vector<uint32_t> vertex_input_locations;
+    RemapSpirvVertexInputLocationsIfNeeded(
+        stock_early_spirv, stock_late_spirv, vertex_input_locations,
+        REXCVAR_GET(gta4_native_force_vertex_location_compaction)
+            ? 0u
+            : vulkan_device->properties().maxVertexInputAttributes);
     apply_loop_watchdog(stock_early_spirv);
     apply_loop_watchdog(stock_late_spirv);
     const uint32_t constant_bank = command.stage == ShaderStage::kVertex ? 0 : 1;
@@ -8632,8 +8654,12 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
         i += count;
       }
     }
+    if (command.stage == ShaderStage::kVertex) {
+      resource->vertex_input_locations = vertex_input_locations;
+    }
     if (command.stage == ShaderStage::kVertex &&
-        !ReflectVertexInputs(stock_early_spirv, resource->vertex_inputs)) {
+        !ReflectVertexInputs(stock_early_spirv, vertex_input_locations,
+                             resource->vertex_inputs)) {
       if (stock_late_module) {
         profile::CpuCall(profile::CpuOp::kDriverDestruction, [&] { return dfn.vkDestroyShaderModule(device, stock_late_module, nullptr); });
       }
@@ -8706,6 +8732,19 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
           override_rejection = "early-module";
         }
       }
+      // Compact the override's vertex input locations before the
+      // vertex-interface comparison below: the stock shader's inputs were
+      // already remapped when it was loaded, so comparing an untouched
+      // override against them rejects every candidate on a device that needs
+      // the compaction.
+      if (!override_rejection) {
+        // The stock shader's map, not one built from the override: the
+        // pipeline describes its attributes from the stock reflection, so an
+        // override that declares different inputs has to stay visibly
+        // different and be rejected below.
+        ApplySpirvVertexInputLocations(override_early_spirv, resource->vertex_input_locations);
+        ApplySpirvVertexInputLocations(override_late_spirv, resource->vertex_input_locations);
+      }
       if (!override_rejection && !override_late_spirv.empty()) {
         const EarlyFragmentTestsStatus late_early_tests =
             InspectEarlyFragmentTests(override_late_spirv);
@@ -8737,7 +8776,8 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
       }
       if (!override_rejection && command.stage == ShaderStage::kVertex) {
         std::vector<NativeVertexInput> override_inputs;
-        if (!ReflectVertexInputs(override_early_spirv, override_inputs) ||
+        if (!ReflectVertexInputs(override_early_spirv, resource->vertex_input_locations,
+                                 override_inputs) ||
             override_inputs != resource->vertex_inputs) {
           override_rejection = "vertex-interface";
         }
@@ -8840,7 +8880,9 @@ void Gta4NativeGraphicsSystem::RegisterShader(const RegisterShaderCommand& comma
     if (command.stage == ShaderStage::kVertex) {
       const auto blend_indices =
           std::find_if(resource->vertex_inputs.begin(), resource->vertex_inputs.end(),
-                       [](const NativeVertexInput& input) { return input.location == 18; });
+                       [](const NativeVertexInput& input) {
+                         return input.location == 18;  // BLENDINDICES0
+                       });
       if (blend_indices != resource->vertex_inputs.end()) {
         static std::atomic<uint64_t> blend_indices_shader_count{0};
         const uint64_t index = NextNativeTraceDiagnosticCount(blend_indices_shader_count);
@@ -22178,7 +22220,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   }
   attributes.reserve(state.vertex_shader_resource->vertex_inputs.size());
   for (const NativeVertexInput& shader_input : state.vertex_shader_resource->vertex_inputs) {
-    if (shader_input.location >= vertex_limits.maxVertexInputAttributes) {
+    if (shader_input.compact_location >= vertex_limits.maxVertexInputAttributes) {
       return reject("vertex-input-location-limit");
     }
     const VertexElement* matching_element = nullptr;
@@ -22191,7 +22233,7 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     }
 
     VkVertexInputAttributeDescription attribute{};
-    attribute.location = shader_input.location;
+    attribute.location = shader_input.compact_location;
     if (!matching_element) {
       attribute.binding = kDefaultVertexBinding;
       attribute.format =

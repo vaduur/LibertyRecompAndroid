@@ -46,6 +46,7 @@ add_executable(unit_tests
     graphics/lighting_semantics_test.cpp
     graphics/native_lighting_transport_test.cpp
     graphics/native_spirv_reflection_test.cpp
+    graphics/native_spirv_location_remap_test.cpp
     graphics/shader_override_policy_test.cpp
     graphics/dirty_state_delta_test.cpp
     graphics/native_frame_scheduling_test.cpp
