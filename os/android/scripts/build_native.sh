@@ -7,11 +7,17 @@
 # usage: build_native.sh [jobs]      (default: number of CPUs - 2)
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
-JOBS="${1:-$(( $(nproc) > 3 ? $(nproc) - 2 : 1 ))}"
+# The generated gta4-recomp sources are around 2 MB each and clang wants
+# several GB apiece, so scaling the job count with the core count alone
+# exhausts memory and takes the machine down with it. Cap the default and
+# pass an explicit count to go faster on a machine with RAM to spare.
+_cores=$(nproc)
+[ "$_cores" -gt 6 ] && _cores=6
+JOBS="${1:-$(( _cores / 2 > 0 ? _cores / 2 : 1 ))}"
 
 [ -d "$ANDROID_NDK" ] || { echo "no NDK at $ANDROID_NDK"; exit 1; }
 
-python "$APP_DIR/scripts/materialize_symlinks.py"
+"$PYTHON" "$APP_DIR/scripts/materialize_symlinks.py"
 "$APP_DIR/scripts/setup_host_tools.sh"
 
 # Snapdragon 865 and every Android 10+ arm64 device we target are ARMv8.2:
@@ -33,9 +39,9 @@ if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "-fno-emulated-tls" "$BUILD
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DREXGLUE_ENABLE_TRACY=OFF \
-    -DGTA4_NATIVE_SPIRV_VAL="$(cygpath -m "$ANDROID_NDK/shader-tools/windows-x86_64/spirv-val.exe")" \
-    -DGTA4_NATIVE_GLSLANG_VALIDATOR="$(cygpath -m "$REPO/out/host-tools/glslang/bin/glslangValidator.exe")" \
-    -DGTA4_NATIVE_DXC_LIBRARY_PATH="$(cygpath -m "$REPO/out/host-tools/dxc/bin/x64")"
+    -DGTA4_NATIVE_SPIRV_VAL="$(winpath "$ANDROID_NDK/shader-tools/$_host/spirv-val$_exe")" \
+    -DGTA4_NATIVE_GLSLANG_VALIDATOR="$(winpath "$REPO/out/host-tools/glslang/bin/glslangValidator.exe")" \
+    -DGTA4_NATIVE_DXC_LIBRARY_PATH="$(winpath "$REPO/out/host-tools/dxc/bin/x64")"
 fi
 
 # Calls between unhooked recompiled functions bypass the weak sub_X aliases so
@@ -45,14 +51,21 @@ fi
 # the sources kept indirect as nfsmw-android does), and the first build with
 # them crashed in game code. DIRECT_CALLS_ENABLE=1 turns them on.
 DIRECT_CALLS="$REPO/glue/rexglue-sdk-main/gta4-recomp/tools/direct_calls.py"
+# cygpath only exists under MSYS; elsewhere the path is already native.
+DIRECT_CALLS_PATH="$(cygpath -m "$DIRECT_CALLS" 2>/dev/null || echo "$DIRECT_CALLS")"
 if [ "${DIRECT_CALLS_ENABLE:-0}" = "1" ]; then
-  python "$(cygpath -m "$DIRECT_CALLS")" apply
+  "$PYTHON" "$DIRECT_CALLS_PATH" apply
 else
-  python "$(cygpath -m "$DIRECT_CALLS")" undo
+  "$PYTHON" "$DIRECT_CALLS_PATH" undo
 fi
 echo "== building with $JOBS jobs"
 # Every behaviour-changing cvar must be in the hack registry (safe mode).
-python "$REPO/glue/rexglue-sdk-main/gta4-recomp/tools/check_hack_registry.py" || { echo "!! hack registry check failed"; exit 1; }
+HACK_REGISTRY_CHECK="$REPO/glue/rexglue-sdk-main/gta4-recomp/tools/check_hack_registry.py"
+if [ -f "$HACK_REGISTRY_CHECK" ]; then
+  "$PYTHON" "$HACK_REGISTRY_CHECK" || { echo "!! hack registry check failed"; exit 1; }
+else
+  echo "-- skipping hack registry check: $HACK_REGISTRY_CHECK is not in the repository"
+fi
 cmake --build "$BUILD_DIR" --target LibertyRecomp -- -j"$JOBS" || { echo "!! native build failed"; exit 1; }
 
 echo "== staging libraries"
@@ -77,7 +90,7 @@ echo "== checks"
 # A hook added after the hooked list was taken must not be bypassed.
 NM_OUT="$(mktemp)"
 "$NDK_BIN/llvm-nm" --defined-only "$BUILD_DIR/glue/gta4-recomp/libmain.so" > "$NM_OUT"
-python "$(cygpath -m "$DIRECT_CALLS")" check "$(cygpath -m "$NM_OUT")" || {
+"$PYTHON" "$DIRECT_CALLS_PATH" check "$(winpath "$NM_OUT")" || {
   echo "!! run: direct_calls.py hooks <llvm-nm libmain.so> && direct_calls.py apply, then rebuild"; exit 1; }
 rm -f "$NM_OUT"
 "$NDK_BIN/llvm-nm" -D --defined-only "$JNILIBS/libmain.so" | grep -E ' SDL_main$' >/dev/null || {

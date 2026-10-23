@@ -12,8 +12,8 @@ adbs shell "simpleperf report -i /data/local/tmp/perf.data --comms $THREAD --sor
 grep "$DSO" "$OUT/full.txt" | awk '{print $1, $2, $4}' > "$OUT/vaddr.txt"
 LIB="$APP_DIR/app/src/main/jniLibs/arm64-v8a/$DSO.so"
 awk '{print $3}' "$OUT/vaddr.txt" > "$OUT/addrs.txt"
-"$NDK_BIN/llvm-addr2line.exe" -f -e "$(winpath "$LIB")" < "$OUT/addrs.txt" | paste - - > "$OUT/fl.txt"
-python - "$OUT" <<'PY'
+"$NDK_BIN/llvm-addr2line$_exe" -f -e "$(winpath "$LIB")" < "$OUT/addrs.txt" | paste - - > "$OUT/fl.txt"
+"$PYTHON" - "$OUT" <<'PY'
 import collections, re, sys
 d = sys.argv[1] + "/"
 total = int(next(l for l in open(d + "full.txt") if l.startswith("Samples")).split()[1])

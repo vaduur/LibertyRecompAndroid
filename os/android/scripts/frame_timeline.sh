@@ -18,4 +18,4 @@ adbs logcat -d -s LibertyRecomp:W | tr -d '\r' | grep "frame-timeline:" > "$OUT/
 echo "--gta4_native_frame_timeline=false" | adbs shell "cat > $FILES/live_cvars.txt"
 sleep 2
 adbs shell "rm -f $FILES/live_cvars.txt"
-python "$(dirname "$0")/frame_timeline.py" "$OUT/sf.txt" "$OUT/timeline.txt"
+"$PYTHON" "$(dirname "$0")/frame_timeline.py" "$OUT/sf.txt" "$OUT/timeline.txt"

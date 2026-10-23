@@ -20,7 +20,7 @@ for _ in $(seq 1 80); do
   o=$(bash "$(dirname "$0")/cpu_frame.sh" 3 2>&1)
   f=$(echo "$o" | grep '^fps' | awk '{print $2}')
   g=$(echo "$o" | grep XThread | head -1 | awk '{print $2}')
-  busy=$(python -c "print(int(float('${g:-0}') * float('${f:-0}') / 10))" 2>/dev/null || echo 0)
+  busy=$("$PYTHON" -c "print(int(float('${g:-0}') * float('${f:-0}') / 10))" 2>/dev/null || echo 0)
   # Gameplay: the busiest guest thread works >= ~4 ms per frame at a steady
   # frame rate, twice in a row (it spun at ~32 ms before gta4_frame_wait_sleep).
   if [ "${busy:-0}" -ge 12 ] 2>/dev/null; then

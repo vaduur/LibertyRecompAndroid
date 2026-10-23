@@ -21,7 +21,7 @@ snap > "$A"
 for _ in $(seq "$SECS"); do sleep 1; frames >> "$F"; done
 snap > "$B"
 T1=$(date +%s.%N)
-python - "$(winpath "$A")" "$(winpath "$B")" "$(winpath "$F")" "$(python -c "print($T1-$T0)")" <<'PY'
+"$PYTHON" - "$(winpath "$A")" "$(winpath "$B")" "$(winpath "$F")" "$("$PYTHON" -c "print($T1-$T0)")" <<'PY'
 import sys
 def load(p):
     d={}

@@ -34,7 +34,10 @@ def materialize(repo):
             continue
         rel = row.split(b'\t', 1)[1].decode()
         link = repo / rel
-        if not link.is_file() or link.stat().st_size > 4096:
+        # A real symlink is already what the build wants. Only a checkout
+        # without symlink support leaves the target path in a plain file, and
+        # reading a real symlink would yield the target's contents instead.
+        if link.is_symlink() or not link.is_file() or link.stat().st_size > 4096:
             continue
         target = (link.parent / link.read_text(encoding='utf-8', errors='replace').strip()).resolve()
         if target.is_dir():
