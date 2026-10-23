@@ -25,14 +25,45 @@ namespace vulkan {
 // since the previous call.
 std::string ConsumeCommandCounters(uint32_t frames);
 
+// The Vulkan feature the last device creation failed on, empty when it
+// succeeded. The renderer sets it so the app can tell the user which feature
+// the device was missing instead of only that it could not start.
+const std::string& LastDeviceRequirementFailure();
+
+// What a caller needs from the Vulkan device.
+//
+// The defaults are the strict set the native renderer has always required, so
+// a caller that says nothing keeps today's behaviour. A caller that can
+// degrade relaxes the ones it has a fallback for: the renderer already drops
+// the draws that need a feature it lacks, so refusing the whole device over
+// one of them keeps a game that would have run half-correct from starting at
+// all.
+struct VulkanDeviceRequirements {
+  // The native shaders are compiled against Vulkan 1.2.
+  bool vulkan_1_2 = true;
+  // The push-constant ABI carries 64-bit device addresses, so every module
+  // declares the Int64 capability whether or not it uses it.
+  bool shader_int64 = true;
+  // The guest's clip-disable is expressed as depth clamp. The draws that need
+  // it are dropped without it.
+  bool depth_clamp = true;
+  // The per-sample resolve shaders read gl_SampleID.
+  bool sample_rate_shading = true;
+  // Per-target blend equations and write masks. The draws whose targets
+  // disagree on them are dropped without it.
+  bool independent_blend = true;
+  // Filled in with the name of the first requirement that was not met, so the
+  // caller can tell the user which one it was.
+  std::string unmet;
+};
+
 class VulkanDevice {
  public:
-  static std::unique_ptr<VulkanDevice> CreateIfSupported(const VulkanInstance* vulkan_instance,
-                                                         VkPhysicalDevice physical_device,
-                                                         bool with_gpu_emulation,
-                                                         bool with_swapchain,
-                                                         bool with_native_shader_support = false,
-                                                         bool with_dynamic_rendering = false);
+  static std::unique_ptr<VulkanDevice> CreateIfSupported(
+      const VulkanInstance* vulkan_instance, VkPhysicalDevice physical_device,
+      bool with_gpu_emulation, bool with_swapchain,
+      bool with_native_shader_support = false, bool with_dynamic_rendering = false,
+      VulkanDeviceRequirements* requirements = nullptr);
 
   VulkanDevice(const VulkanDevice&) = delete;
   VulkanDevice& operator=(const VulkanDevice&) = delete;

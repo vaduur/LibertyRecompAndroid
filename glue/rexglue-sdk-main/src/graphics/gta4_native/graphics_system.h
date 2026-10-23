@@ -131,6 +131,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   bool has_presentation() const override { return presenter_ != nullptr; }
   ui::GraphicsProvider* provider() const override { return provider_.get(); }
   ui::Presenter* presenter() const override { return presenter_.get(); }
+  std::string last_setup_failure() const override { return last_setup_failure_; }
 
   uint32_t GetTitleCommandAbi(uint32_t title_id) const override;
   bool SubmitTitleCommand(uint32_t title_id, uint32_t abi_version, const void* command,
@@ -1976,6 +1977,8 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   ui::WindowedAppContext* app_context_ = nullptr;
   std::unique_ptr<ui::GraphicsProvider> provider_;
   std::unique_ptr<ui::Presenter> presenter_;
+  // Why the last setup failed, in words for the player.
+  std::string last_setup_failure_;
 
   std::mutex render_mutex_;
   std::condition_variable render_condition_;

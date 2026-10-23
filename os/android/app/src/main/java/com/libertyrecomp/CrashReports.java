@@ -122,7 +122,10 @@ final class CrashReports {
             case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE:
                 return true;
             case ApplicationExitInfo.REASON_EXIT_SELF:
-                return exit.getStatus() != 0;
+                // Status 4 is the game saying this device cannot run it. The
+                // reason is on the launcher's own screen, not in a crash
+                // report: nothing crashed.
+                return exit.getStatus() != 0 && exit.getStatus() != 4;
             case ApplicationExitInfo.REASON_SIGNALED:
                 // The launcher ends a leftover game process with SIGKILL before Play.
                 return exit.getStatus() != 9;

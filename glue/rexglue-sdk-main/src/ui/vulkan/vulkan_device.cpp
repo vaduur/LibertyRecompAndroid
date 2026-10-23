@@ -63,6 +63,23 @@ namespace vulkan {
 
 #include "command_counters.inc"
 
+namespace {
+
+// The feature the last device creation failed on. The first failure wins: the
+// requirements are checked in order of how fundamental they are, so the
+// earliest one is the one worth telling the user about.
+std::string g_device_requirement_failure;
+
+void RecordDeviceRequirementFailure(const char* unmet) {
+  if (g_device_requirement_failure.empty()) {
+    g_device_requirement_failure = unmet;
+  }
+}
+
+}  // namespace
+
+const std::string& LastDeviceRequirementFailure() { return g_device_requirement_failure; }
+
 template <typename Structure, VkStructureType StructureType>
 struct VulkanFeatures {
   Structure supported = {StructureType};
@@ -80,9 +97,16 @@ struct VulkanFeatures {
 std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     const VulkanInstance* const vulkan_instance, const VkPhysicalDevice physical_device,
     const bool with_gpu_emulation, const bool with_swapchain,
-    const bool with_native_shader_support, const bool with_dynamic_rendering) {
+    const bool with_native_shader_support, const bool with_dynamic_rendering,
+    VulkanDeviceRequirements* const requirements) {
   assert_not_null(vulkan_instance);
   assert_not_null(physical_device);
+
+  // The strict set, unless the caller says which ones it can do without.
+  VulkanDeviceRequirements needed;
+  if (requirements) {
+    needed = *requirements;
+  }
 
   const VulkanInstance::Functions& ifn = vulkan_instance->functions();
 
@@ -111,31 +135,51 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   VkPhysicalDeviceFeatures supported_features = {};
   ifn.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
 
-  if (with_native_shader_support &&
+  if (with_native_shader_support && needed.vulkan_1_2 &&
       properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 2, 0)) {
     REXLOG_WARN(
         "Vulkan device '{}' exposes API {}.{}, but Liberty native shaders require Vulkan 1.2",
         properties.deviceName, VK_VERSION_MAJOR(properties.apiVersion),
         VK_VERSION_MINOR(properties.apiVersion));
+    RecordDeviceRequirementFailure("vulkan_1_2");
+    needed.unmet = "vulkan_1_2";
+    if (requirements) {
+      *requirements = needed;
+    }
     return nullptr;
   }
-  if (with_native_shader_support && !supported_features.shaderInt64) {
+  if (with_native_shader_support && needed.shader_int64 && !supported_features.shaderInt64) {
     REXLOG_WARN(
         "Vulkan device '{}' doesn't support shaderInt64 required by Liberty native shaders",
         properties.deviceName);
+    RecordDeviceRequirementFailure("shaderInt64");
+    needed.unmet = "shaderInt64";
+    if (requirements) {
+      *requirements = needed;
+    }
     return nullptr;
   }
-  if (with_native_shader_support && !supported_features.depthClamp) {
+  if (with_native_shader_support && needed.depth_clamp && !supported_features.depthClamp) {
     REXLOG_WARN(
         "Vulkan device '{}' doesn't support depthClamp required by Liberty native rendering",
         properties.deviceName);
+    RecordDeviceRequirementFailure("depthClamp");
+    needed.unmet = "depthClamp";
+    if (requirements) {
+      *requirements = needed;
+    }
     return nullptr;
   }
-  if (with_native_shader_support && !supported_features.sampleRateShading) {
+  if (with_native_shader_support && needed.sample_rate_shading && !supported_features.sampleRateShading) {
     // Declared statically by the per-sample fullscreen conversion shaders. A
     // draw-time flag cannot make that shader interface legal without it.
     REXLOG_WARN("Vulkan device '{}' lacks native shader capability sampleRateShading",
                 properties.deviceName);
+    RecordDeviceRequirementFailure("sampleRateShading");
+    needed.unmet = "sampleRateShading";
+    if (requirements) {
+      *requirements = needed;
+    }
     return nullptr;
   }
   if (with_native_shader_support && !supported_features.shaderClipDistance) {
@@ -148,13 +192,18 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   }
 
   if ((with_gpu_emulation || with_native_shader_support) &&
-      !supported_features.independentBlend) {
+      needed.independent_blend && !supported_features.independentBlend) {
     // Independent per-target blend equations and write masks cannot be
     // represented faithfully without this feature.
     REXLOG_WARN(
         "Vulkan device '{}' doesn't support the independentBlend feature "
         "required for GPU emulation or Liberty native rendering",
         properties.deviceName);
+    RecordDeviceRequirementFailure("independentBlend");
+    needed.unmet = "independentBlend";
+    if (requirements) {
+      *requirements = needed;
+    }
     return nullptr;
   }
 
@@ -1149,6 +1198,8 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
   }
 
+  // The device works, so nothing was missing.
+  g_device_requirement_failure.clear();
   return device;
 }
 

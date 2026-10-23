@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 #include <rex/system/xtypes.h>
 
@@ -50,6 +51,11 @@ class IGraphicsSystem {
                                  KernelState* kernel_state) = 0;
 
   virtual bool has_presentation() const = 0;
+
+  // Why the last setup failed, in words meant for the player. Empty when the
+  // failure has no cause the graphics system can name; the log always has
+  // the details.
+  virtual std::string last_setup_failure() const { return {}; }
 
   // --- Optional capabilities, default no-op -------------------------------
 
