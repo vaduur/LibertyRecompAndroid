@@ -931,6 +931,7 @@ void ProcessPauseTabShoulders(PPCContext& parent, uint8_t* base,
   g_pause_tab_input.epoch = epoch.sequence;
   const uint32_t screen = LoadU32(base, kCurrentScreenAddress);
   const bool keyboard_left_down = epoch.valid && IsDown(epoch.state, VirtualKey::kQ);
+  const bool keyboard_right_down = epoch.valid && IsDown(epoch.state, VirtualKey::kE);
   const bool gamepad_left_down =
       epoch.gamepad_valid &&
       (epoch.gamepad_buttons & rex::input::X_INPUT_GAMEPAD_LEFT_SHOULDER) != 0;
@@ -938,10 +939,26 @@ void ProcessPauseTabShoulders(PPCContext& parent, uint8_t* base,
       epoch.gamepad_valid &&
       (epoch.gamepad_buttons & rex::input::X_INPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
   const bool left_down = keyboard_left_down || gamepad_left_down;
-  const bool right_down = gamepad_right_down;
+  const bool right_down = keyboard_right_down || gamepad_right_down;
 
   if (!epoch.frontend_active ||
       !gta4::frontend_menu::policy::IsPauseTabScreen(screen)) {
+    // A bumper press that reaches no tab is the usual failure: the pause
+    // menu is up but its screen is not one of the tab screens, or the
+    // frontend was not recognised as active. Say so, or the silence looks
+    // like the input never arrived.
+    if (rex::input::IsInputTraceEnabled() &&
+        (left_down != g_pause_tab_input.left_down ||
+         right_down != g_pause_tab_input.right_down)) {
+      REXLOG_INFO(
+          "input-e2e: seq={} stage=pause-tab result=ignored reason={} epoch={} screen={} "
+          "frontend-active={} shoulders={}/{} keyboard={}/{} gamepad={}/{} buttons={:04X}",
+          rex::input::NextInputTraceSequence(),
+          !epoch.frontend_active ? "not-frontend" : "not-a-tab-screen", epoch.sequence, screen,
+          epoch.frontend_active, left_down, right_down, keyboard_left_down,
+          keyboard_right_down, gamepad_left_down, gamepad_right_down,
+          epoch.gamepad_buttons);
+    }
     g_pause_tab_input = {
         .epoch = epoch.sequence,
         .screen = screen,
@@ -960,9 +977,9 @@ void ProcessPauseTabShoulders(PPCContext& parent, uint8_t* base,
     if (rex::input::IsInputTraceEnabled()) {
       REXLOG_INFO(
           "input-e2e: seq={} stage=pause-tab result=armed epoch={} screen={} "
-          "shoulders={}/{} keyboard-left={} gamepad={}/{} buttons={:04X}",
+          "shoulders={}/{} keyboard={}/{} gamepad={}/{} buttons={:04X}",
           rex::input::NextInputTraceSequence(), epoch.sequence, screen, left_down, right_down,
-          keyboard_left_down, gamepad_left_down, gamepad_right_down,
+          keyboard_left_down, keyboard_right_down, gamepad_left_down, gamepad_right_down,
           epoch.gamepad_buttons);
     }
     return;
@@ -1228,7 +1245,10 @@ constexpr ButtonBinding kButtonBindings[] = {
     {VirtualKey::kXButton1, Action::kFrontendCancel},
     {VirtualKey::kR, Action::kFrontendX},
     {VirtualKey::kSpace, Action::kFrontendY},
-    {VirtualKey::kE, Action::kFrontendY},
+    // E is the right bumper, the counterpart of Q. It was an alias for Y,
+    // which Space already covers; without it the guest's right shoulder
+    // action had no key at all and the next pause tab was unreachable.
+    {VirtualKey::kE, Action::kFrontendRightShoulder},
     {VirtualKey::kQ, Action::kFrontendLeftShoulder},
     {VirtualKey::kRButton, Action::kFrontendLeftTrigger},
     {VirtualKey::kLButton, Action::kFrontendRightTrigger},
