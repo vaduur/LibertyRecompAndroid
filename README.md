@@ -17,7 +17,7 @@ Mesa Turnip driver. There is no emulator in between.
 
 # !!! THIS PROJECT IS ON HIATUS.
 
-## No updates for now. Got no time for it due to IRL stuff. Thanks for checking this out and for testing! From now on please, stick to forks and/or try to fork it yourself, with Claude it's actually quite easy to make this work better. I kinda achieved what I've wanted from this project -- this runs on my device quite OK (like on X360 that it was released), so I'm stepping down for now. Thanks and bye!
+## No updates for now. Got no time for it due to IRL stuff. Thanks for checking this out and for testing! From now on please, stick to forks and/or try to fork it yourself, with Claude it's actually quite easy to make this work better. I kinda achieved what I've wanted from this project -- this runs on my device quite OK (like on X360 that it was released for), so I'm stepping down for now. Thanks and bye!
 
 ### - vaduur
 
