@@ -15,11 +15,15 @@ Mesa Turnip driver. There is no emulator in between.
 
 **DISCLAIMER!**
 
-!!! 10/16/2026 - On vacation until end of the month, fellas, no updates until then. Sowwy! Stick to forks and experimental settings until then, no issues will be sorted also. Touch grass like I do, it's necessary.  
+# !!! THIS PROJECT IS ON HIATUS.
+
+## No updates for now. Got no time for it due to IRL stuff. Thanks for checking this out and for testing! From now on please, stick to forks and/or try to fork it yourself, with Claude it's actually quite easy to make this work better. I kinda achieved what I've wanted from this project -- this runs on my device quite OK (like on X360 that it was released), so I'm stepping down for now. Thanks and bye!
+
+### - vaduur
 
 This is pure 100% AI slop. I didn't made this by hand at all, it's all thanks to Claude and I, vaduur, take ZERO credit or responsibility of this port being unstable. It will run shitty, that's a guarantee. All I did is spent couple of sleepless night testing and pointing out the issues. Oh, yeah, and spent some pocket change on Claude sub ofc. Please be aware of it and feel free to fork this repo or use it as a reference in your future ReXGlue to Android ports. Thank you and have a nice day.
 
-BTW, Any feedback is very appreciated, [Issues](https://github.com/vaduur/LibertyRecompAndroid/issues) are open, submit a ticket if you have any.
+Issues are closed while the project is on hiatus.
 
 
 > [!CAUTION]
