@@ -334,6 +334,11 @@ REXCVAR_DEFINE_DOUBLE(gta4_native_depth_bias_slope_scale, 1.0, "GTA IV/Graphics/
 REXCVAR_DEFINE_UINT32(gta4_native_debug_force_depth_clamp, 0, "GTA IV/Graphics/Native Renderer",
                       "Diagnostics: force depth clamp on draws without color targets (1) or all draws (2)")
     .range(0, 2);
+REXCVAR_DEFINE_STRING(gta4_native_device_features, "lenient", "GTA IV/Graphics/Native Renderer",
+                      "Which Vulkan device features the renderer refuses to start without: "
+                      "strict refuses a device that lacks any of them, lenient only refuses the "
+                      "ones it cannot work without and drops the draws that need them")
+    .allowed({"strict", "lenient"});
 REXCVAR_DEFINE_UINT32(gta4_fps_guard, 3, "GTA IV/Performance",
                       "30 FPS guard: highest content reduction step it may take when frames miss "
                       "the 30 Hz budget (0 = off; 1-3 = environment reflection every other "
@@ -3850,6 +3855,56 @@ void Gta4NativeGraphicsSystem::NameNativeFlightObject(VkObjectType type, uint64_
     }                                                     \
   } while (0)
 
+namespace {
+
+// The Vulkan features the renderer refuses to start without.
+//
+// Depth clamp and independent blend have a fallback: the renderer drops the
+// draws that need them, so a device without them still plays, with the
+// two-sided z-fail light volumes missing and the draws whose render targets
+// disagree on blending dropped.
+//
+// The other three have none. The native shaders are compiled against Vulkan
+// 1.2, the push-constant ABI carries 64-bit device addresses so every module
+// declares the Int64 capability, and the per-sample resolve shaders read
+// gl_SampleID.
+ui::vulkan::VulkanDeviceRequirements NativeDeviceRequirements() {
+  ui::vulkan::VulkanDeviceRequirements requirements;
+  if (REXCVAR_GET(gta4_native_device_features) == "lenient") {
+    requirements.depth_clamp = false;
+    requirements.independent_blend = false;
+  }
+  return requirements;
+}
+
+// The player cannot act on "Vulkan device creation failed". Say which
+// feature the GPU is missing, in words, so the launcher can show it.
+std::string DescribeDeviceRequirement(const std::string& requirement) {
+  if (requirement == "vulkan_1_2") {
+    return "this device's GPU driver does not support Vulkan 1.2, which this game's renderer "
+           "requires";
+  }
+  if (requirement == "shaderInt64") {
+    return "this device's GPU does not support 64-bit integers in shaders (shaderInt64), which "
+           "this game's renderer requires";
+  }
+  if (requirement == "depthClamp") {
+    return "this device's GPU does not support depth clamping (depthClamp), which this game's "
+           "renderer requires";
+  }
+  if (requirement == "sampleRateShading") {
+    return "this device's GPU does not support per-sample shading (sampleRateShading), which this "
+           "game's renderer requires";
+  }
+  if (requirement == "independentBlend") {
+    return "this device's GPU does not support per-target blend states (independentBlend), which "
+           "this game's renderer requires";
+  }
+  return {};
+}
+
+}  // namespace
+
 X_STATUS Gta4NativeGraphicsSystem::SetupPresentation(ui::WindowedAppContext* app_context) {
   if (presenter_) {
     return X_STATUS_SUCCESS;
@@ -3858,9 +3913,15 @@ X_STATUS Gta4NativeGraphicsSystem::SetupPresentation(ui::WindowedAppContext* app
   InitializeRendererAntiAliasingController();
 
   if (!provider_) {
-    provider_ = ui::vulkan::VulkanProvider::Create(false, true, true, true);
+    ui::vulkan::VulkanDeviceRequirements requirements = NativeDeviceRequirements();
+    provider_ = ui::vulkan::VulkanProvider::Create(false, true, true, true, &requirements);
   }
   if (!provider_) {
+    last_setup_failure_ =
+        DescribeDeviceRequirement(ui::vulkan::LastDeviceRequirementFailure());
+    if (last_setup_failure_.empty()) {
+      last_setup_failure_ = "this device's GPU could not start the game's Vulkan renderer";
+    }
     return X_STATUS_UNSUCCESSFUL;
   }
   ConfigureDxtDecoding(
@@ -3891,9 +3952,15 @@ X_STATUS Gta4NativeGraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* fu
   }
 
   if (!provider_) {
-    provider_ = ui::vulkan::VulkanProvider::Create(false, false, true, true);
+    ui::vulkan::VulkanDeviceRequirements requirements = NativeDeviceRequirements();
+    provider_ = ui::vulkan::VulkanProvider::Create(false, false, true, true, &requirements);
     if (!provider_) {
       memory_ = nullptr;
+      last_setup_failure_ =
+          DescribeDeviceRequirement(ui::vulkan::LastDeviceRequirementFailure());
+      if (last_setup_failure_.empty()) {
+        last_setup_failure_ = "this device's GPU could not start the game's Vulkan renderer";
+      }
       return X_STATUS_UNSUCCESSFUL;
     }
     ConfigureDxtDecoding(
@@ -21896,27 +21963,6 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
     effective_polygon_mode = NativePolygonMode::kFill;
   }
 
-  if (!vulkan_device->properties().independentBlend) {
-    bool first_blend_found = false;
-    bool first_blend_enabled = false;
-    NativeBlendControlState first_blend{};
-    for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
-      if ((target.color_attachment_mask & (1u << target_index)) == 0) {
-        continue;
-      }
-      const NativeBlendControlState blend =
-          DecodeNativeBlendControl(fixed_function_state.blend_controls[target_index]);
-      const bool blend_enabled = blend != kNativeBlendControlIdentity;
-      if (!first_blend_found) {
-        first_blend = blend;
-        first_blend_enabled = blend_enabled;
-        first_blend_found = true;
-      } else if (blend_enabled != first_blend_enabled || (blend_enabled && blend != first_blend)) {
-        return reject("independent-blend-unsupported");
-      }
-    }
-  }
-
   const bool user_pointer = user_pointer_stride != 0;
   const VkPrimitiveTopology topology = ConvertPrimitiveTopology(primitive_type);
   if (topology == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) {
@@ -22016,6 +22062,42 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreatePipeline(
   key.destination_blend_alpha = keyed_primary_blend.destination_alpha;
   key.blend_operation_alpha = keyed_primary_blend.alpha_operation;
   key.sample_mask = sample_mask.host_mask;
+  if (!vulkan_device->properties().independentBlend) {
+    // Without the feature every colour attachment has to carry the same
+    // blend state, the colour write mask included. A draw whose targets
+    // disagree on any of it cannot be expressed, so it is dropped rather
+    // than turned into a pipeline Vulkan would reject.
+    bool first_target = true;
+    bool first_blend_enabled = false;
+    NativeBlendControlState first_blend{};
+    uint32_t first_write_mask = 0;
+    for (uint32_t target_index = 0; target_index < kRenderTargetCount; ++target_index) {
+      if ((active_color_target_mask & (1u << target_index)) == 0) {
+        continue;
+      }
+      const bool blend_enabled = (key.blend_enable_mask & (1u << target_index)) != 0;
+      const NativeBlendControlState blend = DecodeNativeBlendControl(key.blend_controls[target_index]);
+      const uint32_t write_mask =
+          NativeColorWriteMaskForTarget(key.color_write_mask, target_index);
+      if (first_target) {
+        first_target = false;
+        first_blend_enabled = blend_enabled;
+        first_blend = blend;
+        first_write_mask = write_mask;
+        continue;
+      }
+      if (blend_enabled != first_blend_enabled ||
+          (blend_enabled && blend != first_blend) || write_mask != first_write_mask) {
+        return reject("independent-blend-unsupported");
+      }
+    }
+    // The temporal path gives its auxiliary attachments their own write
+    // masks and a VK_BLEND_OP_MAX blend, which the feature is what makes
+    // legal.
+    if (key.temporal_auxiliary) {
+      return reject("independent-blend-unsupported-temporal");
+    }
+  }
   if (!SelectNativeBlendConstants(
           key.blend_controls, NativeBlendWriteMask(key.color_write_mask, key.color_formats),
           fixed_function_state.blend_constants,
@@ -25242,7 +25324,11 @@ VkPipeline Gta4NativeGraphicsSystem::GetOrCreateFullscreenPipeline(
   VkPipelineMultisampleStateCreateInfo multisample{};
   multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
   multisample.rasterizationSamples = destination_samples;
-  multisample.sampleShadingEnable = destination_samples != VK_SAMPLE_COUNT_1_BIT;
+  // Sample shading is a feature the device may not have: the emulation path
+  // guards it the same way. Without the feature the multisample resolve
+  // still works, it just does not shade per sample.
+  multisample.sampleShadingEnable = destination_samples != VK_SAMPLE_COUNT_1_BIT &&
+                                   vulkan_device->properties().sampleRateShading;
   multisample.minSampleShading = 1.0f;
   std::array<VkPipelineColorBlendAttachmentState, 2> color_attachments{};
   for (auto& attachment : color_attachments) {
@@ -33087,8 +33173,14 @@ bool Gta4NativeGraphicsSystem::RecordNativeFrame(
                                        target.samples).pixel_override;
     command.split_postfx_applied = split_dof_draw && postfx_filtered_scene_ &&
         postfx_filtered_scene_ == command.textures[2];
+    // The sun shafts shader is the one bundled module with real 64-bit
+    // arithmetic, so it needs a device with shaderInt64. Without it the
+    // pass is skipped rather than failing to load its module.
+    const auto* sun_shafts_provider = static_cast<ui::vulkan::VulkanProvider*>(provider_.get());
+    const bool sun_shafts_int64 = sun_shafts_provider && sun_shafts_provider->vulkan_device() &&
+        sun_shafts_provider->vulkan_device()->properties().shaderInt64;
     const bool sun_shafts_draw = is_draw && dof_pixel && SupportsSplitPostFx(dof_pixel->hash) &&
-        modern_shader_frame_.settings().enabled && fusion_cloud_ready_;
+        modern_shader_frame_.settings().enabled && fusion_cloud_ready_ && sun_shafts_int64;
     const bool trace_composite = modern_diagnostics_.enabled() && is_draw && dof_pixel && SupportsSplitPostFx(dof_pixel->hash);
     if (trace_composite && (!split_dof_draw || !postfx_scheduler.scene_capture_pending())) {
       modern_diagnostics_.SkipPostFx(dof_pixel->hash, uint32_t(command.render_phase),

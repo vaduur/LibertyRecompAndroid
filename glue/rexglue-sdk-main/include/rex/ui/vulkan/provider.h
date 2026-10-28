@@ -23,9 +23,9 @@ namespace vulkan {
 
 class VulkanProvider : public GraphicsProvider {
  public:
-  static std::unique_ptr<VulkanProvider> Create(bool with_gpu_emulation, bool with_presentation,
-                                                bool with_native_shader_support = false,
-                                                bool with_dynamic_rendering = false);
+  static std::unique_ptr<VulkanProvider> Create(
+      bool with_gpu_emulation, bool with_presentation, bool with_native_shader_support = false,
+      bool with_dynamic_rendering = false, VulkanDeviceRequirements* requirements = nullptr);
 
   VulkanInstance* vulkan_instance() const { return vulkan_instance_.get(); }
 

@@ -238,7 +238,7 @@ public class LauncherActivity extends Activity {
 
         mLastLaunch = text("", 13, R.color.picker_error);
         mLastLaunch.setGravity(Gravity.CENTER);
-        mLastLaunch.setMaxLines(4);
+        mLastLaunch.setMaxLines(6);
         mLastLaunch.setEllipsize(android.text.TextUtils.TruncateAt.END);
         left.addView(mLastLaunch, matchWrap(dp(8)));
 

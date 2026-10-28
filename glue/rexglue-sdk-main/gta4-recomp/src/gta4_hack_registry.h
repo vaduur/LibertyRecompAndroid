@@ -108,6 +108,8 @@ inline constexpr auto kRegistry = std::to_array<Entry>({
     {"gta4_native_host_fog", Kind::kSetting, "", "host fog"},
     {"gta4_native_host_sun_shafts", Kind::kSetting, "", "host sun shafts"},
     {"gta4_native_light_overrides", Kind::kSetting, "", "light shader overrides"},
+    {"gta4_native_device_features", Kind::kArchitecture, "strict",
+     "Vulkan features the renderer refuses to start without"},
     // --- Renderer guards ---
     {"gta4_native_loop_watchdog", Kind::kGuard, "", "runaway shader loops end instead of hanging the GPU"},
     {"gta4_native_loop_watchdog_budget", Kind::kGuard, "", "shader loop iteration budget"},

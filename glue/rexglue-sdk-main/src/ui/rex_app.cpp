@@ -11,6 +11,7 @@
 
 #include <rex/rex_app.h>
 
+#include <cstdio>
 #include <cstdlib>
 
 #include <rex/assert.h>
@@ -59,6 +60,41 @@ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace rex {
+
+#if REX_PLATFORM_ANDROID
+namespace {
+
+// The launcher reads the launch report for the reason a launch failed and
+// shows it on its own screen. The Java side writes that report before the
+// game starts, so this appends to it: the device, GPU and driver facts in
+// it belong in a bug report.
+//
+// The report lives in the app's external files directory, which the host
+// Activity points XDG_DATA_HOME at, so that is where the user folder points.
+void AppendLaunchResult(const std::string& reason) {
+  const std::filesystem::path folder = filesystem::GetUserFolder();
+  if (folder.empty()) {
+    REXLOG_ERROR("No user folder: the launch report was not written");
+    return;
+  }
+  std::string line = reason;
+  for (char& c : line) {
+    if (c == '\n' || c == '\r') {
+      c = ' ';
+    }
+  }
+  const std::filesystem::path report = folder / "last_launch.txt";
+  FILE* file = std::fopen(report.string().c_str(), "a");
+  if (!file) {
+    REXLOG_ERROR("Could not append to {}", report.string());
+    return;
+  }
+  std::fprintf(file, "result: cannot start: %s\n", line.c_str());
+  std::fclose(file);
+}
+
+}  // namespace
+#endif
 
 // --- ReXApp ---
 
@@ -281,11 +317,24 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     // Say so instead of closing silently, then leave without tearing down the
     // half-initialized runtime and presentation: that teardown has crashed
     // (a double free under the ImGui drawer) and there is nothing to save.
+    // The graphics system knows more than "setup failed" when the device is
+    // the reason, so ask it first.
+    const std::string graphics_reason =
+        runtime_->graphics_system() ? runtime_->graphics_system()->last_setup_failure()
+                                     : std::string();
     const std::string message =
-        fmt::format("The game could not start on this device (runtime setup failed, status "
-                    "{:08X}).\n\nThe reason is in the crash report the launcher shows next "
-                    "and in Android/data/com.libertyrecomp/files/Liberty Recompiled/logs.",
-                    status);
+        graphics_reason.empty()
+            ? fmt::format("The game could not start on this device (runtime setup failed, "
+                          "status {:08X}).\n\nThe reason is in the crash report the launcher shows "
+                          "next and in Android/data/com.libertyrecomp/files/Liberty Recompiled/logs.",
+                          status)
+            : fmt::format("The game could not start on this device: {}.\n\nThe reason is in the "
+                          "crash report the launcher shows next and in "
+                          "Android/data/com.libertyrecomp/files/Liberty Recompiled/logs.",
+                          graphics_reason);
+    if (!graphics_reason.empty()) {
+      AppendLaunchResult(graphics_reason);
+    }
     // SDL shows a real Android dialog and waits for OK; the POSIX message box
     // only prints to stderr.
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Liberty Recompiled", message.c_str(), nullptr);
@@ -395,6 +444,16 @@ bool ReXApp::SetupPresentation() {
       auto msg =
           fmt::format("Failed to load GPU plugin '{}'. See log for details.", config_.gpu_plugin);
       REXLOG_ERROR("{}", msg);
+#if REX_PLATFORM_ANDROID
+      // The POSIX message box only prints to stderr, which Android discards:
+      // the player would see a black screen and nothing else.
+      const std::string reason = fmt::format("the GPU renderer '{}' could not be loaded",
+                                             config_.gpu_plugin);
+      AppendLaunchResult(reason);
+      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Liberty Recompiled", msg.c_str(), nullptr);
+      rex::FlushLogging();
+      std::_Exit(4);
+#endif
       rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
       return false;
     }
@@ -404,6 +463,28 @@ bool ReXApp::SetupPresentation() {
     X_STATUS status = config_.graphics->SetupPresentation(&app_context());
     if (XFAILED(status)) {
       REXLOG_ERROR("Graphics presentation setup failed: {:08X}", status);
+#if REX_PLATFORM_ANDROID
+      // A black screen and "the game exited with an error (status 1)" tells
+      // the player nothing. Name what the device is missing, put it where the
+      // launcher looks for it, and leave with a status of its own so the card
+      // does not claim the game crashed.
+      const std::string reason = config_.graphics->last_setup_failure();
+      const std::string message = reason.empty()
+                                      ? std::string("This device cannot run the game: its GPU "
+                                                    "could not start the game's renderer.")
+                                      : fmt::format("This device cannot run the game: {}.\n\n"
+                                                    "The launcher shows this on its own screen. "
+                                                    "The details are in "
+                                                    "Android/data/com.libertyrecomp/files/Liberty "
+                                                    "Recompiled/logs.",
+                                                    reason);
+      AppendLaunchResult(reason.empty() ? "the GPU could not start the game's renderer" : reason);
+      // SDL shows a real Android dialog and waits for OK; the POSIX message
+      // box only prints to stderr.
+      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Liberty Recompiled", message.c_str(), nullptr);
+      rex::FlushLogging();
+      std::_Exit(4);
+#endif
       return false;
     }
   }

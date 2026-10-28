@@ -48,7 +48,8 @@ namespace vulkan {
 std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emulation,
                                                        const bool with_presentation,
                                                        const bool with_native_shader_support,
-                                                       const bool with_dynamic_rendering) {
+                                                       const bool with_dynamic_rendering,
+                                                       VulkanDeviceRequirements* const requirements) {
   std::unique_ptr<VulkanProvider> provider(new VulkanProvider());
 
   const bool enable_validation =
@@ -86,7 +87,7 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
     provider->vulkan_device_ = VulkanDevice::CreateIfSupported(
         provider->vulkan_instance_.get(), physical_devices[REXCVAR_GET(vulkan_device)],
         with_gpu_emulation, with_presentation, with_native_shader_support,
-        with_dynamic_rendering);
+        with_dynamic_rendering, requirements);
   }
 
   if (!provider->vulkan_device_) {
@@ -140,7 +141,7 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
     for (const VkPhysicalDevice physical_device : physical_devices_ordered) {
       provider->vulkan_device_ = VulkanDevice::CreateIfSupported(
           provider->vulkan_instance_.get(), physical_device, with_gpu_emulation, with_presentation,
-          with_native_shader_support, with_dynamic_rendering);
+          with_native_shader_support, with_dynamic_rendering, requirements);
       if (provider->vulkan_device_) {
         break;
       }
