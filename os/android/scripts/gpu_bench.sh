@@ -42,7 +42,7 @@ for _ in $(seq 1 80); do
   o=$(bash "$(dirname "$0")/cpu_frame.sh" 3 2>&1)
   f=$(echo "$o" | grep '^fps' | awk '{print $2}')
   g=$(echo "$o" | grep XThread | head -1 | awk '{print $2}')
-  busy=$(python -c "print(int(float('${g:-0}') * float('${f:-0}') / 10))" 2>/dev/null || echo 0)
+  busy=$("$PYTHON" -c "print(int(float('${g:-0}') * float('${f:-0}') / 10))" 2>/dev/null || echo 0)
   if [ "${busy:-0}" -ge 30 ] 2>/dev/null; then ready=1; break; fi
   adbs shell pidof "$GAME_PROC" >/dev/null || { echo "[$LABEL] game exited" | tee "$OUT/summary.txt"; exit 1; }
 done
@@ -67,5 +67,5 @@ adbs logcat -d | grep -E "skips/frame|vertex-cache|stale-object|thermal|pipeline
 {
   echo "[$LABEL] $fps  gpu=${busy}%  alive=${alive:+yes}"
   echo "$cpu"
-  [ -s "$OUT/profile.log" ] && python "$(winpath "$(dirname "$0")/gpu_profile_summary.py")" "$(winpath "$OUT/profile.log")"
+  [ -s "$OUT/profile.log" ] && python && python  "$PYTHON" "$(winpath "$(dirname "$0")/gpu_profile_summary.py")" "$(winpath "$OUT/profile.log")"
 } | tee "$OUT/summary.txt"

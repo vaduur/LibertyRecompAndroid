@@ -13,7 +13,7 @@ for _ in $(seq "$SECONDS_TOTAL"); do
   sleep 1
   adbs shell "dumpsys SurfaceFlinger --latency '$LAYER'" | tr -d '\r' >> "$OUT"
 done
-python - "$(winpath "$OUT")" <<'EOF'
+"$PYTHON" - "$(winpath "$OUT")" <<'EOF'
 import sys
 present = set()
 for line in open(sys.argv[1]):

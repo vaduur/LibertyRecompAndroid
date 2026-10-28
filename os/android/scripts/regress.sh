@@ -89,14 +89,14 @@ echo "log: crashes=$crashes guard-hits=$guards renderer-rejections=$rejected err
 
 check_args=("$OUT/shot.png")
 [ -n "$REF" ] && check_args+=("$OUT_ROOT/$REF/shot.png")
-check_line=$(python "$(dirname "$0")/shot_check.py" "${check_args[@]}" 2>&1 | tail -1)
+check_line=$("$PYTHON" "$(dirname "$0")/shot_check.py" "${check_args[@]}" 2>&1 | tail -1)
 echo "screenshot: $check_line${REF:+ (against $REF)}" >> "$OUT/summary.txt"
 case "$check_line" in *broken:*) reasons+=("screenshot ${check_line#*broken: }") ;; esac
 similarity=$(echo "$check_line" | sed -n 's/.*similarity \([0-9.]*\).*/\1/p')
-if [ -n "$similarity" ] && python -c "import sys; sys.exit(0 if $similarity < $MIN_SIMILARITY else 1)"; then
+if [ -n "$similarity" ] && "$PYTHON" -c "import sys; sys.exit(0 if $similarity < $MIN_SIMILARITY else 1)"; then
   reasons+=("screenshot similarity $similarity (< $MIN_SIMILARITY) against $REF")
 fi
-[ -n "$REF" ] && python "$(dirname "$0")/shot_diff.py" "$OUT_ROOT" "$REF" "$LABEL" > /dev/null 2>&1  # diff.png
+[ -n "$REF" ] && python && python  "$PYTHON" "$(dirname "$0")/shot_diff.py" "$OUT_ROOT" "$REF" "$LABEL" > /dev/null 2>&1  # diff.png
 
 if [ ${#reasons[@]} -eq 0 ]; then
   echo "PASS" >> "$OUT/summary.txt"

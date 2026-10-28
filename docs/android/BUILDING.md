@@ -1,8 +1,9 @@
 # Building the Android APK
 
-The Android build has only been done on **Windows with Git Bash**. The scripts use `cygpath` and
-Windows host tools (`dxc.exe`, `glslangValidator.exe`). Building on Linux or macOS needs small
-changes to `os/android/scripts/env.sh`, `build_native.sh` and `setup_host_tools.sh`.
+The build runs on **Windows with Git Bash** and on **Linux** (and macOS with the
+host-tool paths adjusted). The scripts pick the host tools and the interpreter
+themselves: `env.sh` exports `PYTHON` (`python3` on Linux, `python` on Git Bash)
+and `setup_host_tools.sh` downloads the matching DXC and glslang builds.
 
 The generated C++ for the game is checked in, as it is upstream, so building needs no game files.
 
@@ -10,25 +11,32 @@ The generated C++ for the game is checked in, as it is upstream, so building nee
 
 | Tool | Version used |
 |---|---|
-| Git for Windows (Git Bash) | any recent |
+| Git for Windows (Git Bash) *or* Linux | any recent |
 | Python | 3.12 |
 | CMake | 3.31 (3.29 or newer is required) |
 | Ninja | 1.11 |
-| Android Studio | for the SDK, the platform tools and its bundled JDK (`jbr`, JDK 17+) |
+| Android Studio (Windows) *or* the SDK command-line tools (Linux) | for the SDK, the platform tools and a JDK 17+ |
 | Android SDK platform | 35 |
 | **Android NDK** | **r29, `29.0.14206865`** (older NDKs lack `std::jthread` in libc++) |
 
-`os/android/scripts/env.sh` finds the SDK at `%LOCALAPPDATA%\Android\Sdk` and the JDK in
-`C:\Program Files\Android\Android Studio\jbr`. Override `ANDROID_HOME`, `ANDROID_NDK`, `NDK_VER` or
-`JAVA_HOME` if yours are elsewhere.
+`os/android/scripts/env.sh` finds the SDK at `%LOCALAPPDATA%\Android\Sdk` on
+Windows and at `$HOME/Android/Sdk` elsewhere, and the JDK in Android Studio's
+`jbr` on Windows or in `/usr/lib/jvm` on Linux. Override `ANDROID_HOME`,
+`ANDROID_NDK`, `NDK_VER`, `JAVA_HOME` or `PYTHON` if yours are elsewhere.
+
+On Linux the SDK command-line tools are enough:
+
+```bash
+sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865"
+```
 
 ## Steps
 
-All commands run in Git Bash from the repository root.
+All commands run from the repository root, in Git Bash or a plain Linux shell.
 
 ```bash
 # 1. Fetch the pinned dependencies and apply the source patches (as upstream)
-python tools/setup_repo.py
+python3 tools/setup_repo.py
 
 # 2. Build the Vulkan driver proxy and the libadrenotools hooks (once)
 bash os/android/scripts/build_driver_proxy.sh
