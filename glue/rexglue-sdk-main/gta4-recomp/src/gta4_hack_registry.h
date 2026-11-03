@@ -113,6 +113,7 @@ inline constexpr auto kRegistry = std::to_array<Entry>({
     {"gta4_native_loop_watchdog_budget", Kind::kGuard, "", "shader loop iteration budget"},
     // --- Renderer diagnostics ---
     {"gta4_native_debug_force_depth_clamp", Kind::kDiagnostic, "", ""},
+    {"gta4_native_force_vertex_location_compaction", Kind::kDiagnostic, "false", ""},
     {"gta4_native_debug_gpu_attribution", Kind::kDiagnostic, "", ""},
     {"gta4_native_depth_bias_constant_scale", Kind::kDiagnostic, "", ""},
     {"gta4_native_depth_bias_slope_scale", Kind::kDiagnostic, "", ""},

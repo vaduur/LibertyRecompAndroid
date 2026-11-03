@@ -150,7 +150,12 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
   };
 
   struct NativeVertexInput {
+    // The semantic's location from ConvertVertexUsageToLocation(), which is
+    // what a vertex declaration is matched against, and the slot the shader
+    // module was compacted to, which is what Vulkan is told. They differ on a
+    // device that exposes fewer than 40 vertex attributes.
     uint32_t location = 0;
+    uint32_t compact_location = 0;
     NativeVertexNumericType numeric_type = NativeVertexNumericType::kFloat;
     uint32_t component_count = 0;
 
@@ -173,6 +178,9 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
     std::array<VkShaderModule, 4> colorless_modules{};
     std::string filename;
     std::vector<NativeVertexInput> vertex_inputs;
+    // Legacy location of each compacted vertex input slot, in slot order; see
+    // native_spirv_location_remap.h. Empty when no compaction was needed.
+    std::vector<uint32_t> vertex_input_locations;
     // Reads gl_VertexIndex/gl_InstanceIndex: its draws cannot be concatenated.
     bool uses_vertex_index = false;
     // Bytes of this stage's guest constant bank any of its modules can read
@@ -1523,6 +1531,7 @@ class Gta4NativeGraphicsSystem final : public system::IGraphicsSystem {
                               VkDeviceSize offset);
   bool InitializeShaderCache();
   static bool ReflectVertexInputs(const std::vector<uint32_t>& spirv,
+                                  const std::vector<uint32_t>& vertex_input_locations,
                                   std::vector<NativeVertexInput>& inputs);
   ShaderOverrideSelection ResolvePipelineShaderOverrides(
       const NativeShader* vertex_shader, const NativeShader* pixel_shader,
