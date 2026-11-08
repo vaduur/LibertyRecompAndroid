@@ -252,11 +252,11 @@ int XexModule::ApplyPatch(XexModule* module) {
   auto header_ptr = (uint8_t*)module->xex_header();
 
   // If headers_source_offset is set, copy [source_offset:source_size] to
-  // target_offset
+  // target_offset. The two ranges can overlap, which memcpy does not allow.
   if (patch_header->delta_headers_source_offset) {
-    memcpy(header_ptr + patch_header->delta_headers_target_offset,
-           header_ptr + patch_header->delta_headers_source_offset,
-           patch_header->delta_headers_source_size);
+    memmove(header_ptr + patch_header->delta_headers_target_offset,
+            header_ptr + patch_header->delta_headers_source_offset,
+            patch_header->delta_headers_source_size);
   }
 
   // If new size is smaller than original, null out the difference
@@ -363,11 +363,11 @@ int XexModule::ApplyPatch(XexModule* module) {
   uint8_t* base_exe = memory()->TranslateVirtual(module->base_address_);
 
   // If image_source_offset is set, copy [source_offset:source_size] to
-  // target_offset
+  // target_offset. The two ranges can overlap, which memcpy does not allow.
   if (patch_header->delta_image_source_offset) {
-    memcpy(base_exe + patch_header->delta_image_target_offset,
-           base_exe + patch_header->delta_image_source_offset,
-           patch_header->delta_image_source_size);
+    memmove(base_exe + patch_header->delta_image_target_offset,
+            base_exe + patch_header->delta_image_source_offset,
+            patch_header->delta_image_source_size);
   }
 
   // TODO: should we use new_image_size here instead?
