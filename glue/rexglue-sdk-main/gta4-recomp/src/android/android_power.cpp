@@ -8,6 +8,10 @@
 // boost early when a frame runs long). The session holds the busiest threads
 // of the process, re-ranked every two seconds like the thread pinning, and
 // once per frame period it reports the largest CPU time any of them used.
+// The frame period and the target follow gta4_frame_limit, so a 40 or 60 FPS
+// cap gets a 25 or 16.7 ms budget instead of the 30 FPS one. When the busiest
+// threads change, Android 14+ moves the session to the new threads
+// (APerformanceHint_setThreads); older versions get a new session.
 //
 // Thermal headroom (0 = cool, 1 = the device starts throttling) is read every
 // two seconds and logged. With android_thermal_guard the draw distance is
@@ -39,12 +43,14 @@
 
 #include <rex/cvar.h>
 
+#include "android_power_budget.h"
+
 REXCVAR_DEFINE_BOOL(android_perf_hint, true, "GTA IV/Performance",
                     "Report each frame's work to Android's performance hint API so the CPU "
                     "clocks follow the frame budget instead of running at the maximum");
 REXCVAR_DEFINE_DOUBLE(android_perf_hint_target_ms, 30.0, "GTA IV/Performance",
-                      "Work time per frame the performance hint asks for (a margin below the "
-                      "33.3 ms of 30 FPS)")
+                      "Longest work time per frame the performance hint asks for; the target is "
+                      "the smaller of this and 90% of the frame limit's period (30 ms at 30 FPS)")
     .range(8.0, 33.0);
 REXCVAR_DEFINE_BOOL(android_thermal_guard, false, "GTA IV/Performance",
                     "Lower the draw distance when Android forecasts thermal throttling and "
@@ -59,6 +65,7 @@ REXCVAR_DEFINE_DOUBLE(android_thermal_guard_cool_c, 68.0, "GTA IV/Performance",
     .range(40.0, 100.0);
 
 REXCVAR_DECLARE(double, gta4_draw_distance_scale);
+REXCVAR_DECLARE(uint32_t, gta4_frame_limit);
 
 namespace {
 
@@ -73,6 +80,7 @@ struct Api {
   int (*update_target)(APerformanceHintSession*, int64_t) = nullptr;
   int (*report_actual)(APerformanceHintSession*, int64_t) = nullptr;
   void (*close_session)(APerformanceHintSession*) = nullptr;
+  int (*set_threads)(APerformanceHintSession*, const pid_t*, size_t) = nullptr;  // API 34
   AThermalManager* (*thermal_acquire)() = nullptr;
   float (*thermal_headroom)(AThermalManager*, int) = nullptr;
 };
@@ -89,6 +97,7 @@ Api LoadApi() {
   find(api.update_target, "APerformanceHint_updateTargetWorkDuration");
   find(api.report_actual, "APerformanceHint_reportActualWorkDuration");
   find(api.close_session, "APerformanceHint_closeSession");
+  find(api.set_threads, "APerformanceHint_setThreads");
   find(api.thermal_acquire, "AThermal_acquireManager");
   find(api.thermal_headroom, "AThermal_getThermalHeadroom");
   return api;
@@ -102,7 +111,6 @@ int64_t ThreadCpuNanoseconds(pid_t tid) {
   return int64_t(time.tv_sec) * 1000000000 + time.tv_nsec;
 }
 
-// The busiest threads over the last interval, by CPU time.
 // Adreno GPU temperature in degrees C (kgsl reports millidegrees); NaN if absent.
 float GpuTemperature() {
   float value = __builtin_nanf("");
@@ -114,6 +122,7 @@ float GpuTemperature() {
   return value;
 }
 
+// The busiest threads over the last interval, by CPU time.
 std::vector<pid_t> BusiestThreads(std::unordered_map<pid_t, int64_t>& previous, size_t count) {
   std::vector<std::pair<int64_t, pid_t>> usage;
   std::unordered_map<pid_t, int64_t> current;
@@ -154,7 +163,15 @@ void PowerLoop() {
                       manager ? "available" : "unavailable", thermal ? "available" : "unavailable");
 
   using Clock = std::chrono::steady_clock;
-  constexpr auto kPeriod = std::chrono::microseconds(33333);
+  // Re-read every tick: the in-game Display menu changes the frame limit live.
+  const auto frame_period = [] {
+    return std::chrono::nanoseconds(
+        gta4::android_power::FramePeriodNs(REXCVAR_GET(gta4_frame_limit)));
+  };
+  const auto target_work = [] {
+    return gta4::android_power::TargetWorkNs(REXCVAR_GET(gta4_frame_limit),
+                                             REXCVAR_GET(android_perf_hint_target_ms));
+  };
   constexpr auto kRankInterval = std::chrono::seconds(2);
   APerformanceHintSession* session = nullptr;
   std::vector<pid_t> threads;
@@ -162,7 +179,7 @@ void PowerLoop() {
   std::unordered_map<pid_t, int64_t> rank_times;
   int64_t target_ns = 0;
   auto next_rank = Clock::now();
-  auto next_tick = Clock::now() + kPeriod;
+  auto next_tick = Clock::now() + frame_period();
   auto next_log = Clock::now() + std::chrono::seconds(10);
   float headroom = __builtin_nanf("");
   float gpu_temperature = __builtin_nanf("");
@@ -173,8 +190,9 @@ void PowerLoop() {
   for (;;) {
     std::this_thread::sleep_until(next_tick);
     const auto now = Clock::now();
-    next_tick += kPeriod;
-    if (next_tick < now) next_tick = now + kPeriod;  // fell behind (suspended): resynchronize
+    const auto period = frame_period();
+    next_tick += period;
+    if (next_tick < now) next_tick = now + period;  // fell behind (suspended): resynchronize
 
     const bool enabled = manager && REXCVAR_GET(android_perf_hint);
     if (!enabled && session) {
@@ -185,15 +203,22 @@ void PowerLoop() {
     if (now >= next_rank) {
       next_rank = now + kRankInterval;
       const std::vector<pid_t> busiest = BusiestThreads(rank_times, 4);
-      if (enabled && busiest != threads) {
-        if (session) api.close_session(session);
-        session = nullptr;
+      // "|| !session": the hint switched back on (live cvar) over the same threads.
+      if (enabled && (busiest != threads || !session)) {
         threads = busiest;
         thread_times.assign(threads.size(), -1);
-        if (!threads.empty()) {
-          std::vector<int32_t> ids(threads.begin(), threads.end());
-          target_ns = int64_t(REXCVAR_GET(android_perf_hint_target_ms) * 1e6);
-          session = api.create_session(manager, ids.data(), ids.size(), target_ns);
+        // Moving a live session keeps what the system has learned about this
+        // workload; a new session starts from scratch every two seconds.
+        const bool moved = session && !threads.empty() && api.set_threads &&
+                           api.set_threads(session, threads.data(), threads.size()) == 0;
+        if (!moved) {
+          if (session) api.close_session(session);
+          session = nullptr;
+          if (!threads.empty()) {
+            std::vector<int32_t> ids(threads.begin(), threads.end());
+            target_ns = target_work();
+            session = api.create_session(manager, ids.data(), ids.size(), target_ns);
+          }
         }
       }
       headroom = thermal ? api.thermal_headroom(thermal, 10) : __builtin_nanf("");  // 10 s ahead
@@ -230,7 +255,7 @@ void PowerLoop() {
     }
 
     if (session) {
-      const int64_t wanted = int64_t(REXCVAR_GET(android_perf_hint_target_ms) * 1e6);
+      const int64_t wanted = target_work();
       if (wanted != target_ns) {
         target_ns = wanted;
         api.update_target(session, target_ns);
