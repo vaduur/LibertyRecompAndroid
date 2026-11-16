@@ -9,6 +9,8 @@ import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.Surface;
+import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -183,7 +185,51 @@ public class LibertyActivity extends SDLActivity {
             surface.getHolder().setFixedSize(mSurfaceWidth, mSurfaceHeight);
             Log.i(TAG, "fixed surface " + mSurfaceWidth + "x" + mSurfaceHeight);
         }
+        // A new Surface starts without a frame rate: re-apply the game's.
+        surface.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                applyFrameRateHint(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                applyFrameRateHint(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+            }
+        });
         return surface;
+    }
+
+    // ------------------------------------------------------ display refresh
+
+    /** The game's frame limit (0 = unlocked, no preference); -1 until the game reports it. */
+    private volatile float mGameFrameRate = -1f;
+
+    /**
+     * Called by the game (android_frame_rate_hint.cpp) on a native thread
+     * whenever gta4_frame_limit changes. Adaptive 90/120 Hz panels then pick
+     * a refresh rate that is a multiple of the cap, so each frame stays on
+     * screen for the same number of refreshes.
+     */
+    @SuppressWarnings("unused")
+    public void setGameFrameRate(float fps) {
+        mGameFrameRate = fps;
+        runOnUiThread(() -> {
+            if (mSurface != null) applyFrameRateHint(mSurface.getHolder().getSurface());
+        });
+    }
+
+    private void applyFrameRateHint(Surface surface) {
+        float fps = mGameFrameRate;
+        if (fps < 0f) return;
+        int result = FrameRateHint.apply(surface, fps);
+        if (result == FrameRateHint.APPLIED) {
+            Log.i(TAG, "frame rate hint: " + (fps > 0f ? fps + " FPS" : "none"));
+        }
     }
 
     @Override

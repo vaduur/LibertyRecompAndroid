@@ -129,6 +129,7 @@ inline constexpr auto kRegistry = std::to_array<Entry>({
     {"android_thermal_guard_hot_c", Kind::kSetting, "", "thermal guard start temperature"},
     {"android_thermal_guard_cool_c", Kind::kSetting, "", "thermal guard end temperature"},
     {"android_thermal_log", Kind::kDiagnostic, "", ""},
+    {"android_frame_rate_hint", Kind::kSetting, "", "display refresh rate requested to match the frame limit"},
     {"gta4_fps_guard", Kind::kGameplay, "0", "environment reflections reduced when frames run long"},
     // --- Gameplay (densities are user settings: safe mode keeps them) ---
     {"gta4_ped_density_scale", Kind::kSetting, "", "pedestrian density"},
