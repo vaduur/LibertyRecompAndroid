@@ -168,9 +168,15 @@ final class DriverBridge {
                                 + "another) could not be used either: " + fallbackFrom);
     }
 
-    /** Copies an unpacked package from external storage into exec-capable private storage. */
+    /**
+     * Copies an unpacked package from external storage into exec-capable
+     * private storage, and accepts the copy only if it is byte for byte the
+     * package the player accepted in the launcher (see {@link DriverTrust}).
+     * The private copy is what gets hashed and loaded, so the shared folder
+     * cannot be swapped between the check and the load.
+     */
     private static File prepareCustom(Context context, String name) throws IOException {
-        if (name.isEmpty() || name.contains("/") || name.contains("..")) {
+        if (!DriverTrust.isPlainFileName(name) || name.contains("..")) {
             throw new IOException("bad custom driver name: " + name);
         }
         File source = new File(context.getExternalFilesDir(null), "drivers/" + name);
@@ -190,6 +196,13 @@ final class DriverBridge {
                 copy(in, out);
             }
         }
+        DriverTrust trust = DriverTrust.inPrivateDir(context.getFilesDir());
+        if (!trust.matches(name, DriverTrust.hashDirectory(destination))) {
+            deleteRecursively(destination);
+            throw new IOException(trust.isTrusted(name)
+                    ? "custom driver " + name + " changed since it was accepted in the launcher"
+                    : "custom driver " + name + " was never accepted in the launcher");
+        }
         return destination;
     }
 
@@ -201,6 +214,10 @@ final class DriverBridge {
                 java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
                 copy(in, bytes);
                 String name = new JSONObject(bytes.toString("UTF-8")).optString("libraryName", "");
+                // A path ("../x.so") would load a file outside the verified package.
+                if (!name.isEmpty() && !DriverTrust.isPlainFileName(name)) {
+                    throw new IOException("meta.json libraryName is not a plain file name: " + name);
+                }
                 if (!name.isEmpty() && new File(dir, name).isFile()) return name;
             } catch (JSONException ignored) {
             }

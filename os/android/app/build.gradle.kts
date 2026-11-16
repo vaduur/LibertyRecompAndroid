@@ -69,3 +69,8 @@ android {
         abortOnError = false
     }
 }
+
+dependencies {
+    // JVM unit tests of the launcher's plain-Java logic (src/test): ./gradlew :app:testDebugUnitTest
+    testImplementation("junit:junit:4.13.2")
+}

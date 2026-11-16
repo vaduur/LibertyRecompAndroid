@@ -784,6 +784,7 @@ public class LauncherActivity extends Activity {
         addDriver(DriverBridge.SYSTEM, "System driver",
                 "The device's own Vulkan driver (needs Vulkan 1.2)");
         File[] packages = customRoot().listFiles();
+        DriverTrust trust = driverTrust();
         if (packages != null) {
             Arrays.sort(packages);
             for (File dir : packages) {
@@ -793,8 +794,15 @@ public class LauncherActivity extends Activity {
                 String details = meta == null ? "Imported driver" : join(
                         meta.optString("description"), meta.optString("driverVersion"),
                         meta.optString("author").isEmpty() ? "" : "by " + meta.optString("author"));
-                addDriver(DriverBridge.CUSTOM_PREFIX + dir.getName(), name,
-                        details.isEmpty() ? "Imported driver" : details);
+                if (details.isEmpty()) details = "Imported driver";
+                boolean accepted;
+                try {
+                    accepted = trust.isTrusted(dir.getName());
+                } catch (IOException e) {
+                    accepted = false;
+                }
+                if (!accepted) details = "Not accepted yet (asks before use) - " + details;
+                addDriver(DriverBridge.CUSTOM_PREFIX + dir.getName(), name, details);
             }
         }
         int index = mDriverModes.indexOf(current);
@@ -828,8 +836,92 @@ public class LauncherActivity extends Activity {
     private void onDriverChecked(int id) {
         int index = id - 1;
         if (index < 0 || index >= mDriverModes.size()) return;
-        writeDriverMode(mDriverModes.get(index));
+        String mode = mDriverModes.get(index);
+        writeDriverMode(mode);
         updateDriverNote(index);
+        if (mode.startsWith(DriverBridge.CUSTOM_PREFIX)) verifyCustomDriver(mode, null);
+    }
+
+    private DriverTrust driverTrust() {
+        return DriverTrust.inPrivateDir(getFilesDir());
+    }
+
+    /**
+     * Makes sure the custom driver {@code mode} is one the player accepted:
+     * imported here, or confirmed now. A package unpacked by hand, or one
+     * whose files changed since, needs a confirmation, because the game will
+     * load its library as native code. Declining switches to the bundled
+     * Turnip. {@code then} (may be null) runs afterwards unless the dialog
+     * is dismissed.
+     */
+    private void verifyCustomDriver(String mode, Runnable then) {
+        String name = mode.substring(DriverBridge.CUSTOM_PREFIX.length());
+        File dir = new File(customRoot(), name);
+        setBusy(true, "Checking the driver...");
+        new Thread(() -> {
+            java.util.Map<String, String> hashes = null;
+            boolean accepted = false;
+            boolean known = false;
+            String error = null;
+            try {
+                hashes = DriverTrust.hashDirectory(dir);
+                accepted = driverTrust().matches(name, hashes);
+                known = driverTrust().isTrusted(name);
+            } catch (IOException e) {
+                error = e.getMessage();
+            }
+            final java.util.Map<String, String> finalHashes = hashes;
+            final boolean finalAccepted = accepted;
+            final boolean finalKnown = known;
+            final String finalError = error;
+            mMain.post(() -> {
+                setBusy(false, null);
+                if (finalError != null) {
+                    toast("Cannot read the driver: " + finalError);
+                    useBundledDriver();
+                    if (then != null) then.run();
+                    return;
+                }
+                if (finalAccepted) {
+                    if (then != null) then.run();
+                    return;
+                }
+                confirmCustomDriver(name, finalKnown, finalHashes, then);
+            });
+        }, "DriverVerify").start();
+    }
+
+    private void confirmCustomDriver(String name, boolean changed,
+                                     java.util.Map<String, String> hashes, Runnable then) {
+        String why = changed
+                ? "The files of the driver \"" + name + "\" changed after you accepted it "
+                        + "(for example replaced with a file manager or over USB)."
+                : "The driver \"" + name + "\" was not imported through this launcher.";
+        new AlertDialog.Builder(this)
+                .setTitle("Use this driver?")
+                .setMessage(why + "\n\nA Vulkan driver is native code that runs inside the game "
+                        + "with the app's permissions. Only use drivers from a source you trust.")
+                .setPositiveButton("Trust and use", (d, w) -> {
+                    try {
+                        driverTrust().trust(name, hashes);
+                        toast("Driver accepted.");
+                    } catch (IOException e) {
+                        toast("Could not save the driver choice: " + e.getMessage());
+                        useBundledDriver();
+                    }
+                    if (then != null) then.run();
+                })
+                .setNegativeButton("Use bundled Turnip", (d, w) -> {
+                    useBundledDriver();
+                    if (then != null) then.run();
+                })
+                .setOnCancelListener(d -> useBundledDriver())
+                .show();
+    }
+
+    private void useBundledDriver() {
+        writeDriverMode(DriverBridge.TURNIP);
+        refreshDrivers();
     }
 
     private void updateDriverNote(int index) {
@@ -865,8 +957,14 @@ public class LauncherActivity extends Activity {
         if (index < 0 || index >= mDriverModes.size()) return;
         String mode = mDriverModes.get(index);
         if (!mode.startsWith(DriverBridge.CUSTOM_PREFIX)) return;
-        File dir = new File(customRoot(), mode.substring(DriverBridge.CUSTOM_PREFIX.length()));
+        String name = mode.substring(DriverBridge.CUSTOM_PREFIX.length());
+        File dir = new File(customRoot(), name);
         deleteRecursively(dir);
+        try {
+            driverTrust().forget(name);
+        } catch (IOException e) {
+            Log.w(TAG, "forgetting driver " + name + " failed", e);
+        }
         writeDriverMode(DriverBridge.TURNIP);
         refreshDrivers();
         toast("Driver removed. Using the bundled Turnip.");
@@ -964,6 +1062,10 @@ public class LauncherActivity extends Activity {
         }
         JSONObject meta = readMeta(staging);
         String library = meta != null ? meta.optString("libraryName", "") : "";
+        if (!library.isEmpty() && !DriverTrust.isPlainFileName(library)) {
+            deleteRecursively(staging);
+            throw new IOException("meta.json names " + library + ", which is not a plain file name");
+        }
         if (!library.isEmpty() && !new File(staging, library).isFile()) {
             deleteRecursively(staging);
             throw new IOException("meta.json names " + library + ", which is not in the zip");
@@ -981,6 +1083,8 @@ public class LauncherActivity extends Activity {
             deleteRecursively(staging);
             throw new IOException("cannot move the driver into place");
         }
+        // The player chose this zip: accept exactly these files.
+        driverTrust().trust(name, DriverTrust.hashDirectory(target));
         Log.i(TAG, "imported driver " + name + " (" + total + " bytes)");
         return DriverBridge.CUSTOM_PREFIX + name;
     }
@@ -1038,6 +1142,17 @@ public class LauncherActivity extends Activity {
     private static final String PERF_WATER_REFLECTIONS = "water_reflection_interval";
     private static final String PERF_OTHER_REFLECTIONS = "other_reflection_interval";
 
+    /**
+     * The thermal guard until the player sets it: on for GPUs without the
+     * KGSL (Adreno) device. Their phones (Samsung Xclipse, Mali) have only
+     * been tried a little and run hot at these clocks, and the guard reads
+     * Android's thermal headroom, so it trades distant detail for clocks the
+     * device can keep. On Adreno the developer's tuning (guard off) stays.
+     */
+    static boolean thermalGuardDefault() {
+        return !new File("/dev/kgsl-3d0").exists() && !new File("/sys/class/kgsl").exists();
+    }
+
     private android.content.SharedPreferences perfTestPreferences() {
         return getSharedPreferences(PERF_PREFERENCES, Context.MODE_PRIVATE);
     }
@@ -1084,8 +1199,8 @@ public class LauncherActivity extends Activity {
         panel.addView(sustained, matchWrap(dp(4)));
         android.widget.CheckBox thermalGuard = styledCheck("Thermal guard",
                 "Lowers the draw distance before the device starts throttling and restores it "
-                        + "after it has cooled down.",
-                perf.getBoolean(PERF_THERMAL_GUARD, false));
+                        + "after it has cooled down. On by default on non-Adreno GPUs.",
+                perf.getBoolean(PERF_THERMAL_GUARD, thermalGuardDefault()));
         panel.addView(thermalGuard, matchWrap(dp(4)));
         android.widget.CheckBox safeMode = styledCheck("Safe mode (for bug reports)",
                 "Turns off the port's speed shortcuts and gameplay tweaks. Slower. If a bug is "
@@ -1196,7 +1311,18 @@ public class LauncherActivity extends Activity {
     }
 
     private void play(boolean debugLog) {
+        play(debugLog, false);
+    }
+
+    private void play(boolean debugLog, boolean driverChecked) {
         if (mBusy) return;
+        String driverMode = currentDriverMode();
+        if (!driverChecked && driverMode.startsWith(DriverBridge.CUSTOM_PREFIX)) {
+            // The game refuses an unaccepted package and silently falls back
+            // to Turnip; ask here instead, where the player can answer.
+            verifyCustomDriver(driverMode, () -> play(debugLog, true));
+            return;
+        }
         if (Installer.running()) {
             toast("The game is being installed.");
             return;
@@ -1222,7 +1348,7 @@ public class LauncherActivity extends Activity {
                 intent.putExtra(LibertyActivity.EXTRA_GPU_TURBO, perf.getBoolean(PERF_GPU_TURBO, false));
                 intent.putExtra(LibertyActivity.EXTRA_SUSTAINED, perf.getBoolean(PERF_SUSTAINED, false));
                 intent.putExtra(LibertyActivity.EXTRA_THERMAL_GUARD,
-                        perf.getBoolean(PERF_THERMAL_GUARD, false));
+                        perf.getBoolean(PERF_THERMAL_GUARD, thermalGuardDefault()));
                 intent.putExtra(LibertyActivity.EXTRA_SAFE_MODE, perf.getBoolean(PERF_SAFE_MODE, false));
                 intent.putExtra(LibertyActivity.EXTRA_WATER_REFLECTION_INTERVAL,
                         perf.getInt(PERF_WATER_REFLECTIONS, 1));
