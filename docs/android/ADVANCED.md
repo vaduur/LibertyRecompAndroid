@@ -120,6 +120,9 @@ panel, with FSR's sharpening look.
 | `--gta4_native_water_reflection_min_indices=0` | Default 0 (off). Skips draws with fewer indices than this in the water reflection, for example `300`. Small objects disappear from the reflection; at the bridge the reflection is ~500 mostly small draws. Live. |
 | `--gta4_native_shadow_min_indices=0` | Default 0 (off). Skips draws with fewer indices than this in the shadow map passes. Small objects lose their shadows. Live. |
 | `--gta4_native_vertex_cache_order=true` | Default on. Reorders triangles of opaque draws for the GPU vertex cache on a background thread. Same image, slightly less GPU time. Live. |
+| `--android_frame_rate_hint=true` | Default on. Asks Android for a display refresh rate that is a multiple of the frame limit (`Surface.setFrameRate`, Android 11+), so adaptive 90/120 Hz panels (Samsung "Adaptive" motion smoothness, LTPO phones) show every frame for the same number of refreshes instead of juddering. Follows the in-game frame limit live; an unlocked limit clears the request. Live. |
+| `--android_perf_hint=true` | Default on. Reports each frame's CPU work to Android's performance hint API (Android 13+) so clocks follow the frame budget instead of running at the maximum. The budget follows the frame limit: 90% of its period, at most `--android_perf_hint_target_ms` (default 30). On Android 14+ the session moves to the busiest threads instead of being recreated. Live. |
+| `--android_thermal_guard` | Set by the launcher's **Thermal guard** check box: lowers the draw distance when Android forecasts throttling and restores it after cooling down. On by default for GPUs other than Adreno (Samsung Xclipse, Mali). |
 | `--android_pin_hot_threads=false` | Default off. Keeps the busiest threads on the big CPU cores. It made those threads faster on the Retroid Pocket 5 but did not raise the frame rate. Live. |
 | `--install_game_source=PATH` / `--install_update_source=PATH` | Installation sources, instead of the `install/` folder. |
 | `--audio_maxqframes=32` | Audio blocks queued ahead of playback (1-64, each ~5.3 ms), which is also the audio delay. Default 32 (~170 ms) on Android since 0.5.7.7; it was 64 (~340 ms behind the picture). 16 (~85 ms) is tighter but can stutter during frame hitches on slower devices; raise it if the sound crackles. *Restart.* |
@@ -179,6 +182,14 @@ A custom driver package is a folder with the driver library (`.so`) and, optiona
 unpacking. By hand, unpack the zip into `files/drivers/NAME/` and put `custom:NAME` in
 `driver.txt`. If `meta.json` names a `libraryName`, that library is used.
 Otherwise the folder must contain exactly one `.so`.
+
+A custom driver is native code that runs inside the game, so the app only loads a package the
+player has accepted: a zip imported on the launcher is accepted as it is imported. A package unpacked
+by hand, or one whose files changed afterwards (replaced with a file manager or over USB), makes the
+launcher ask **Trust and use** or **Use bundled Turnip** when it is selected or before Play. The
+SHA-256 of every accepted file is kept in the app's private storage, and the game checks the copy it
+loads against it; a package that does not match is not loaded (the game falls back to the bundled
+Turnip and logs why under `LibertyDriver`). `libraryName` in `meta.json` must be a plain file name.
 
 If the bundled Turnip or a custom driver fails to load, the app falls back to the system driver
 (since 0.5.6.2) and records both in the log (tag `LibertyDriver`) and in `files/last_launch.txt`.
